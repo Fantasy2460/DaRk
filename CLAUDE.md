@@ -1,0 +1,161 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## 网络环境
+
+本地开发环境已启用系统代理（Clash/V2Ray，`127.0.0.1:7890`）。所有通过终端访问 GitHub、Homebrew 或外网资源时，代理变量已自动生效：
+
+```bash
+export http_proxy=http://127.0.0.1:7890
+export https_proxy=http://127.0.0.1:7890
+export all_proxy=socks5://127.0.0.1:7890
+```
+
+> 如果命令行工具（如 `curl`、`git`、`brew`）出现外网连接超时，请检查上述变量是否已设置。
+
+## 项目概述
+
+《黑暗之行》—— 基于 Phaser 3 的 2D 地牢暗黑探险 Roguelike 游戏。全部图形为程序生成，不依赖外部美术资源。
+
+详细需求规格见 `docs/DEV_REQUIREMENTS.md`。
+
+## 技术栈
+
+- **游戏引擎**：Phaser 3.80.1（Arcade Physics）
+- **语言**：TypeScript 5.4（ES2020，严格模式）
+- **构建工具**：Vite 5.4
+- **持久化**：LocalStorage（`dark_journey_save_v1`）
+
+## 开发命令
+
+所有命令在 `phaser-demo/` 目录下执行：
+
+```bash
+npm run dev      # 启动开发服务器（localhost:5173）
+npm run build    # tsc 类型检查 + vite 构建（输出到 dist/）
+npm run preview  # 预览生产构建
+```
+
+## 项目结构
+
+```
+phaser-demo/src/
+├── main.ts              # 入口：初始化 Phaser.Game，注册全部 Scene
+├── config/gameConfig.ts # 游戏常量（分辨率、移动速度、背包容量、生成数量等）
+├── types/index.ts       # 全部 TypeScript 接口（Stats、Item、EnemyType、GameSave、RunState 等）
+├── data/                # 静态配置表
+│   ├── classes.ts       # 3 种职业（战士/法师/贤者）的基础属性与技能
+│   ├── enemies.ts       # 敌人类型、AI 参数与掉落表
+│   └── items.ts         # 装备（C/B/A/S 四级）与消耗品定义
+├── scenes/              # Phaser 场景，按游戏流程串联
+│   ├── BootScene.ts     # 启动屏（按任意键进入主菜单）
+│   ├── MainMenuScene.ts # 主菜单：职业选择、读取存档、开始游戏
+│   ├── MainCityScene.ts # 主城：查看/整理装备与背包，进入森林
+│   ├── ForestScene.ts   # 核心玩法场景：战斗、探索、拾取、传送门抉择
+│   └── GameOverScene.ts # 结算：显示深入层数、击杀数、物品数
+├── entities/
+│   ├── Player.ts        # 玩家实体：WASD 移动、空格攻击、Q 闪避、技能冷却
+│   └── Enemy.ts         # 敌人实体：仇恨范围触发、追击/攻击、受击闪烁、击退
+├── systems/
+│   ├── EquipmentSystem.ts   # 7 部位装备栏的穿戴/卸下与属性汇总
+│   ├── InventorySystem.ts   # 18 格背包的增删、查找空位、交换格子
+│   └── FogSystem.ts         # 动态迷雾：Canvas 径向渐变纹理，随玩家位置移动
+└── managers/
+    ├── GameState.ts     # 全局单例状态：局外存档（GameSave）与局内状态（RunState）
+    └── SaveManager.ts   # LocalStorage 读写、导入/导出 JSON
+```
+
+## 核心架构
+
+### 1. 局内 / 局外双轨状态
+
+`GameState` 是全局单例，管理两层数据：
+
+- **`GameSave`**（局外永久存档）：职业选择、主城背包/装备、金币、图鉴进度、天赋树。通过 `SaveManager` 持久化到 LocalStorage。
+- **`RunState`**（局内临时状态）：当前层数、HP/MP、迷雾值、局内背包/装备、击杀数。仅在单次探险期间存在。
+
+关键状态流转：
+- `startRun()`：从 `GameSave.cityEquipment` 复制装备到 `RunState.runEquipment`，初始化 HP/MP。
+- `extractRun()`：存活撤离时，将 `RunState.runInventory` 的物品按顺序填入 `GameSave.cityInventory` 的空位；记录图鉴；清空 `RunState`。
+- `dieInRun()`：死亡时直接丢弃整个 `RunState`，不合并任何物品回主城。
+
+### 2. 程序生成图形
+
+项目没有 `assets/` 目录，所有视觉元素均为代码实时绘制：
+- **角色/敌人**：使用 `Phaser.GameObjects.Container` 组合多个 Ellipse / Circle / Rectangle。
+- **森林地图**：`ForestScene.createGround()` 用 Graphics 绘制棋盘格地面 + 边框。
+- **树木**：多层 Ellipse 叠加出树冠与树干。
+- **迷雾效果**：`FogSystem` 在运行时创建 HTML Canvas，用 `destination-out` 径向渐变挖孔，生成纹理后作为全屏 Image 叠加，随玩家移动。
+
+这意味着添加新敌人或物品不需要准备贴图，只需在 `data/` 中定义新数据并调整颜色/形状参数。
+
+### 3. 场景与输入
+
+场景注册顺序（`main.ts`）：`BootScene → MainMenuScene → MainCityScene → ForestScene → GameOverScene`。
+
+`ForestScene` 是当前核心战斗场景，使用键盘 + 鼠标输入：
+- `WASD`：移动（向量归一化后乘以职业速度）
+- **鼠标指针**：武器与角色始终朝向鼠标位置（`Player.faceTo(worldX, worldY)`）
+- `Space`：普通攻击（检测角色面朝方向前 55px 范围内的最近敌人）
+- `Q`：闪避（8s 冷却，0.5s 无敌帧，速度 ×2.5，带闪烁动画）
+- `T/Y/U/I/O`：释放对应技能，技能目标点取当前鼠标世界坐标
+- `E`：靠近传送门时呼出菜单，选择「撤离」或「深入下一层」
+- `B`：打开/关闭局内背包面板
+
+### 4. 敌人 AI
+
+敌人在 `ForestScene.createEnemies()` 中随机位置生成，数量由 `GAME_CONFIG.enemySpawnCount` 控制。AI 逻辑在 `Enemy.update()` 中：
+1. 待机状态，不主动寻敌。
+2. 玩家进入 `aggroRange` 后触发仇恨。
+3. 追击直到进入 `attackRange`，停止移动并尝试攻击。
+4. 玩家脱离 `aggroRange × 1.5` 后取消仇恨。
+
+Boss 按 `GAME_CONFIG.bossSpawnChance`（15%）概率在每层随机刷新。
+
+### 5. 掉落与拾取
+
+敌人死亡时遍历其 `dropTable`，按概率生成掉落物。掉落物以 Container 形式存在于场景中，玩家靠近（<30px）后自动拾取，通过 `InventorySystem.addItem()` 放入局内背包。背包满时无法拾取。
+
+### 6. 当前已实现 vs 待实现
+
+#### ✅ 已实现
+
+**ForestScene 核心战斗循环**
+- `WASD` 移动、`Space` 普通攻击、`Q` 闪避（带无敌帧与冷却）
+- **鼠标指向**：武器与角色始终朝向鼠标指针位置；普通攻击与技能均以角色面朝方向判定
+- 技能系统：已绑定 `T/Y/U/I/O` 五个快捷键，支持战士（重斩/旋风斩）、法师（火球术/霜冻新星）、贤者（治愈之光/衰弱诅咒）共 6 个技能；技能目标点取当前鼠标世界坐标
+- 技能图标：程序化矢量绘制（斜剑、旋风、火球、雪花、十字、符文），带冷却遮罩与按键提示
+- 投射物系统：`fireball` 从玩家位置向鼠标方向发射飞行火球，命中后产生 AOE 爆炸
+- 受击反馈：玩家与敌人均有闪烁动画；敌人带击退效果
+- 自动回血回蓝：基于最大 HP/MP 的 1%/秒自然恢复
+- HUD：屏幕底部显示血条/蓝条（叠加精确数值，如 `120 / 150`），技能栏在血条下方
+- 掉落与拾取：敌人死亡按 `dropTable` 掉落装备，另附加独立概率掉落生命球/魔法球/C级/B级装备；靠近自动拾取，背包满时拒收
+- 传送门：靠近按 `E` 呼出面板，可选择「安全撤离」或「深入下一层」
+- 背包（局内）：按 `B` 打开背包面板，左侧显示 7 部位装备栏，右侧显示 6×3 物品格；支持点击穿戴/卸下装备，属性实时重算
+
+**敌人 AI**
+- 仇恨范围触发 → 追击 → 进入攻击范围停止并攻击 → 脱离 1.5 倍仇恨范围脱战
+- Boss 按 15% 概率刷新，头顶显示金色名称与血条（overhead HP bar）
+
+**主城与存档**
+- `MainMenuScene`：职业选择（战士/法师/贤者）、存档读取/重置、程序化按钮高亮
+- `MainCityScene`：查看当前装备与背包，显示物品详情（悬停提示），进入森林
+- `GameState` 双轨状态：局外存档（LocalStorage）+ 局内临时状态，支持 `startRun/extractRun/dieInRun`
+- 图鉴记录：击杀怪物与拾取装备自动记入 `bestiary` / `equipmentCodex`
+
+**程序生成图形**
+- 角色/敌人/树木/地面/传送门/技能特效/掉落物均为代码实时绘制，无外部贴图
+
+#### 🚧 待实现
+
+- **玩家头顶血条/蓝条**：怪物已有 overhead 血条，玩家角色头顶暂无血条/蓝条（仅屏幕 HUD 显示）
+- **消耗品使用**：背包中可存放药水，但局内没有使用快捷键或交互逻辑（未绑定使用键）
+- **NPC 商店**：主城缺少商店 NPC 与购买/出售逻辑
+- **天赋树**：`GameSave.talentProgress` 已预留，但无 UI 与加点逻辑
+- **小地图**：无局内小地图或雷达
+- **图鉴完整 UI**：目前只有文字统计，无独立的怪物/装备图鉴浏览界面
+- **剧情模块**：尚无剧情对话或任务系统
+- **深层 A/S 掉落**：A 级与 S 级装备仅在数据表中定义，尚未在森林深层开放获取
+
+后续开发建议优先顺序：`玩家头顶血条` → `消耗品使用` → `NPC 商店` → `小地图` → `天赋树`。
