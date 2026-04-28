@@ -1,6 +1,8 @@
 import type { GameSave, RunState, ClassType, EquipmentSet, InventorySlot } from '../types';
 import { SaveManager } from './SaveManager';
 import { CLASSES } from '../data/classes';
+import { ENEMIES } from '../data/enemies';
+import { getExpToNextLevel, MAX_PLAYER_LEVEL } from '../config/gameConfig';
 
 export class GameState {
   private static instance: GameState;
@@ -31,7 +33,7 @@ export class GameState {
 
     this.run = {
       forestDepth: 1,
-      runInventory: Array.from({ length: 18 }, () => ({ item: null })),
+      runInventory: Array.from({ length: 24 }, () => ({ item: null })),
       runEquipment: { ...this.save.cityEquipment },
       currentHp: cls.baseStats.maxHp,
       currentMp: cls.baseStats.maxMp,
@@ -75,7 +77,7 @@ export class GameState {
     this.persist();
   }
 
-  /** 记录击杀怪物 */
+  /** 记录击杀怪物并结算经验 */
   recordKill(enemyId: string): void {
     if (!this.save.bestiary.includes(enemyId)) {
       this.save.bestiary.push(enemyId);
@@ -83,7 +85,22 @@ export class GameState {
     if (this.run) {
       this.run.enemiesKilled++;
     }
+    const enemy = ENEMIES.find((e) => e.id === enemyId);
+    if (enemy) {
+      this.addExp(enemy.expValue);
+    }
     this.persist();
+  }
+
+  /** 增加经验，触发升级 */
+  addExp(amount: number): void {
+    this.save.exp += amount;
+    let required = getExpToNextLevel(this.save.level);
+    while (this.save.exp >= required && this.save.level < MAX_PLAYER_LEVEL) {
+      this.save.exp -= required;
+      this.save.level++;
+      required = getExpToNextLevel(this.save.level);
+    }
   }
 
   /** 记录拾取装备 */

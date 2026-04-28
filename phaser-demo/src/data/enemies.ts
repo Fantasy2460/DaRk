@@ -17,6 +17,7 @@ export const ENEMIES: EnemyType[] = [
       { itemId: 'copper_ring', chance: 0.08 },
       { itemId: 'hp_potion_small', chance: 0.15 },
     ],
+    expValue: 15,
   },
   {
     id: 'skeleton',
@@ -34,6 +35,7 @@ export const ENEMIES: EnemyType[] = [
       { itemId: 'wooden_shield', chance: 0.08 },
       { itemId: 'hp_potion_small', chance: 0.1 },
     ],
+    expValue: 20,
   },
   {
     id: 'wolf',
@@ -51,6 +53,7 @@ export const ENEMIES: EnemyType[] = [
       { itemId: 'leather_boots', chance: 0.06 },
       { itemId: 'mp_potion_small', chance: 0.12 },
     ],
+    expValue: 18,
   },
   {
     id: 'orc',
@@ -68,6 +71,7 @@ export const ENEMIES: EnemyType[] = [
       { itemId: 'chain_armor', chance: 0.04 },
       { itemId: 'hp_potion_large', chance: 0.08 },
     ],
+    expValue: 25,
   },
   {
     id: 'dark_mage',
@@ -85,6 +89,7 @@ export const ENEMIES: EnemyType[] = [
       { itemId: 'magic_orb', chance: 0.02 },
       { itemId: 'mp_potion_large', chance: 0.1 },
     ],
+    expValue: 22,
   },
   {
     id: 'forest_troll',
@@ -103,5 +108,6 @@ export const ENEMIES: EnemyType[] = [
       { itemId: 'crown_of_kings', chance: 0.01 },
       { itemId: 'hp_potion_large', chance: 0.2 },
     ],
+    expValue: 60,
   },
 ];

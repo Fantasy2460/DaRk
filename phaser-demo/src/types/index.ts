@@ -40,6 +40,14 @@ export interface Consumable {
   description: string;
 }
 
+export interface ActiveConsumableEffect {
+  type: 'slowHp' | 'slowMp' | 'vision';
+  value: number;
+  remainingMs: number;
+  tickIntervalMs: number;
+  lastTickMs: number;
+}
+
 export interface InventorySlot {
   item: Item | Consumable | null;
 }
@@ -54,15 +62,26 @@ export interface EquipmentSet {
   offhand: Item | null;
 }
 
+export type SkillType = 'active' | 'passive';
+
 export interface Skill {
   id: string;
   name: string;
   description: string;
+  type?: SkillType;
+  requiredLevel?: number;
   cooldown: number;
   mpCost: number;
   damage?: number;
+  damagePercent?: number;
   range?: number;
   aoe?: boolean;
+  maxLevel?: number;
+}
+
+export interface SkillTreeTier {
+  level: number;
+  skills: Skill[];
 }
 
 export interface EnemyType {
@@ -77,6 +96,7 @@ export interface EnemyType {
   color: number;
   isBoss: boolean;
   dropTable: { itemId: string; chance: number }[];
+  expValue: number;
 }
 
 export interface GameSave {
@@ -87,6 +107,9 @@ export interface GameSave {
   gold: number;
   bestiary: string[];
   equipmentCodex: string[];
+  level: number;
+  exp: number;
+  skillLevels: Record<string, number>;
 }
 
 export interface RunState {

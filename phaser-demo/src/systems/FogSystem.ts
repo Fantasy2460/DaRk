@@ -43,9 +43,13 @@ export class FogSystem {
     this.fogImage.setOrigin(0.5);
   }
 
-  update(playerX: number, playerY: number): void {
+  update(playerX: number, playerY: number, currentRadius?: number): void {
     if (this.fogImage) {
       this.fogImage.setPosition(playerX, playerY);
+      if (currentRadius && this.visionRadius > 0) {
+        const scale = currentRadius / this.visionRadius;
+        this.fogImage.setScale(scale);
+      }
     }
   }
 

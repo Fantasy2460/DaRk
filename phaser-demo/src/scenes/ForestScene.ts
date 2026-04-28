@@ -7,7 +7,7 @@ import { InventorySystem } from '../systems/InventorySystem';
 import { EquipmentSystem } from '../systems/EquipmentSystem';
 import { ENEMIES } from '../data/enemies';
 import { ITEMS, CONSUMABLES } from '../data/items';
-import { GAME_CONFIG, RARITY_COLORS, SLOT_NAMES } from '../config/gameConfig';
+import { GAME_CONFIG, RARITY_COLORS, SLOT_NAMES, getExpToNextLevel } from '../config/gameConfig';
 import { CLASSES } from '../data/classes';
 import type { Item } from '../types';
 
@@ -31,6 +31,10 @@ export class ForestScene extends Phaser.Scene {
   private fogText!: Phaser.GameObjects.Text;
   private depthText!: Phaser.GameObjects.Text;
   private killText!: Phaser.GameObjects.Text;
+  private expBar!: Phaser.GameObjects.Rectangle;
+  private expBg!: Phaser.GameObjects.Rectangle;
+  private levelText!: Phaser.GameObjects.Text;
+  private lastLevel = 1;
 
   // 掉落物（装备 / 即时生效药水）
   private drops: { container: Phaser.GameObjects.Container; item?: Item; effect?: 'hp' | 'mp' }[] = [];
@@ -41,9 +45,19 @@ export class ForestScene extends Phaser.Scene {
     vx: number;
     vy: number;
     damage: number;
+    directHitDamage?: number;
+    splashDamage?: number;
     range: number;
     traveled: number;
     aoeRange: number;
+  }[] = [];
+
+  // 法力流溢光球
+  private lightOrbs: {
+    container: Phaser.GameObjects.Container;
+    damage: number;
+    target: Enemy;
+    life: number;
   }[] = [];
 
   // 技能 HUD
@@ -53,6 +67,14 @@ export class ForestScene extends Phaser.Scene {
     keyText: Phaser.GameObjects.Text;
     cooldownOverlay: Phaser.GameObjects.Rectangle;
     skillIndex: number;
+  }[] = [];
+
+  // 消耗品快捷栏 HUD
+  private consumableSlots: {
+    bg: Phaser.GameObjects.Rectangle;
+    nameText: Phaser.GameObjects.Text;
+    keyText: Phaser.GameObjects.Text;
+    index: number;
   }[] = [];
 
   // 背包 UI
@@ -80,10 +102,13 @@ export class ForestScene extends Phaser.Scene {
     this.createGround();
     this.createTrees();
     this.createPlayer();
+    this.applyEquipmentStats();
     this.createEnemies();
     this.createPortal();
     this.createHUD();
     this.setupInput();
+
+    this.lastLevel = state.save.level;
 
     this.fogSystem = new FogSystem(this);
     this.fogSystem.create();
@@ -142,7 +167,7 @@ export class ForestScene extends Phaser.Scene {
     const state = GameState.getInstance();
     const startX = GAME_CONFIG.worldWidth / 2;
     const startY = GAME_CONFIG.worldHeight / 2;
-    this.player = new Player(this, startX, startY, state.save.selectedClass!);
+    this.player = new Player(this, startX, startY, state.save.selectedClass!, state.save.level);
   }
 
   private createEnemies() {
@@ -189,9 +214,10 @@ export class ForestScene extends Phaser.Scene {
     this.fogText = this.add.text(20, 20, '迷雾: 0%', { fontSize: '14px', color: '#a78bfa' }).setScrollFactor(0).setDepth(2000);
     this.depthText = this.add.text(20, 44, '层数: 1', { fontSize: '14px', color: '#fbbf24' }).setScrollFactor(0).setDepth(2000);
     this.killText = this.add.text(20, 68, '击杀: 0', { fontSize: '14px', color: '#ef4444' }).setScrollFactor(0).setDepth(2000);
+    this.levelText = this.add.text(20, 92, '等级: 1', { fontSize: '14px', color: '#fbbf24' }).setScrollFactor(0).setDepth(2000);
 
     // 技能栏上方的生命条与法力条（带具体数值）
-    const barY = cam.height - 125;
+    const barY = cam.height - 130;
     this.hpBg = this.add.rectangle(cam.width / 2, barY, 200, 14, 0x000000).setScrollFactor(0).setDepth(2000);
     this.hpBar = this.add.rectangle(cam.width / 2 - 100, barY, 200, 14, 0xef4444).setOrigin(0, 0.5).setScrollFactor(0).setDepth(2000);
     this.hpText = this.add.text(cam.width / 2, barY, '', { fontSize: '12px', color: '#ffffff' }).setOrigin(0.5).setScrollFactor(0).setDepth(2001);
@@ -201,10 +227,15 @@ export class ForestScene extends Phaser.Scene {
     this.mpBar = this.add.rectangle(cam.width / 2 - 100, mpY, 200, 10, 0x3b82f6).setOrigin(0, 0.5).setScrollFactor(0).setDepth(2000);
     this.mpText = this.add.text(cam.width / 2, mpY, '', { fontSize: '11px', color: '#ffffff' }).setOrigin(0.5).setScrollFactor(0).setDepth(2001);
 
+    const expY = mpY + 16;
+    this.expBg = this.add.rectangle(cam.width / 2, expY, 200, 8, 0x000000).setScrollFactor(0).setDepth(2000);
+    this.expBar = this.add.rectangle(cam.width / 2 - 100, expY, 200, 8, 0xfbbf24).setOrigin(0, 0.5).setScrollFactor(0).setDepth(2000);
+
     this.createSkillHUD();
+    this.createConsumableHUD();
 
     // 操作提示
-    this.add.text(cam.width - 20, cam.height - 20, 'WASD移动 | 鼠标指向朝向 | 空格攻击 | Q闪避 | B背包 | T/Y/U/I/O技能 | 靠近传送门按E撤离/深入', {
+    this.add.text(cam.width - 20, cam.height - 20, 'WASD移动 | 鼠标指向朝向 | 空格攻击 | Q闪避 | B背包 | C属性 | N技能页 | T/Y/U/I/O技能 | 1-5使用消耗品 | 靠近传送门按E撤离/深入', {
       fontSize: '12px',
       color: '#94a3b8',
     }).setOrigin(1, 1).setScrollFactor(0).setDepth(2000);
@@ -239,6 +270,32 @@ export class ForestScene extends Phaser.Scene {
         .setScrollFactor(0).setDepth(2002).setVisible(false);
 
       this.skillSlots.push({ bg, icon, keyText, cooldownOverlay, skillIndex: i });
+    }
+  }
+
+  private createConsumableHUD() {
+    const cam = this.cameras.main;
+    const slotSize = 40;
+    const gap = 6;
+    const totalWidth = 5 * slotSize + 4 * gap;
+    const startX = (cam.width - totalWidth) / 2 + slotSize / 2;
+    const y = cam.height - 155;
+
+    for (let i = 0; i < 5; i++) {
+      const x = startX + i * (slotSize + gap);
+      const bg = this.add.rectangle(x, y, slotSize, slotSize, 0x1e293b)
+        .setScrollFactor(0).setDepth(2000);
+      bg.setStrokeStyle(2, 0x334155);
+
+      const nameText = this.add.text(x, y, '', {
+        fontSize: '9px', color: '#e2e8f0',
+      }).setOrigin(0.5).setScrollFactor(0).setDepth(2001);
+
+      const keyText = this.add.text(x + slotSize / 2 - 4, y - slotSize / 2 + 2, String(i + 1), {
+        fontSize: '10px', color: '#94a3b8',
+      }).setOrigin(1, 0).setScrollFactor(0).setDepth(2002);
+
+      this.consumableSlots.push({ bg, nameText, keyText, index: i });
     }
   }
 
@@ -280,17 +337,16 @@ export class ForestScene extends Phaser.Scene {
         g.fillCircle(3, 3, 4);
         break;
       }
-      case 'frostNova': {
-        // 霜冻新星：蓝色六角雪花
-        g.lineStyle(2, 0x60a5fa, 1);
-        for (let i = 0; i < 6; i++) {
-          const angle = (Math.PI / 3) * i;
-          g.lineBetween(Math.cos(angle) * 3, Math.sin(angle) * 3, Math.cos(angle) * 14, Math.sin(angle) * 14);
-          g.lineBetween(Math.cos(angle) * 14, Math.sin(angle) * 14, Math.cos(angle - 0.5) * 9, Math.sin(angle - 0.5) * 9);
-          g.lineBetween(Math.cos(angle) * 14, Math.sin(angle) * 14, Math.cos(angle + 0.5) * 9, Math.sin(angle + 0.5) * 9);
-        }
-        g.fillStyle(0x93c5fd, 0.35);
-        g.fillCircle(0, 0, 5);
+      case 'meteor': {
+        // 星落：金色陨星 + 尾焰
+        g.fillStyle(0xff4500, 1);
+        g.fillCircle(0, 0, 8);
+        g.fillStyle(0xffa500, 0.8);
+        g.fillCircle(2, 2, 5);
+        g.fillStyle(0xffd700, 0.5);
+        g.fillTriangle(-4, 4, 0, 14, 4, 4);
+        g.lineStyle(1.5, 0xff4500, 0.6);
+        g.lineBetween(0, 8, 0, 14);
         break;
       }
       case 'heal': {
@@ -314,6 +370,19 @@ export class ForestScene extends Phaser.Scene {
         g.fillStyle(0x000000, 1);
         g.fillCircle(-3, -2, 2);
         g.fillCircle(3, -2, 2);
+        break;
+      }
+      case 'manaOverflow': {
+        // 法力流溢：蓝色光环 + 光芒
+        g.lineStyle(2, 0x22d3ee, 1);
+        g.strokeCircle(0, 0, 12);
+        g.fillStyle(0x22d3ee, 0.5);
+        g.fillCircle(0, 0, 6);
+        g.lineStyle(1, 0x93c5fd, 0.6);
+        for (let i = 0; i < 8; i++) {
+          const angle = (Math.PI / 4) * i;
+          g.lineBetween(Math.cos(angle) * 8, Math.sin(angle) * 8, Math.cos(angle) * 14, Math.sin(angle) * 14);
+        }
         break;
       }
       default: {
@@ -340,6 +409,13 @@ export class ForestScene extends Phaser.Scene {
       I: Phaser.Input.Keyboard.KeyCodes.I,
       O: Phaser.Input.Keyboard.KeyCodes.O,
       B: Phaser.Input.Keyboard.KeyCodes.B,
+      N: Phaser.Input.Keyboard.KeyCodes.N,
+      C: Phaser.Input.Keyboard.KeyCodes.C,
+      ONE: Phaser.Input.Keyboard.KeyCodes.ONE,
+      TWO: Phaser.Input.Keyboard.KeyCodes.TWO,
+      THREE: Phaser.Input.Keyboard.KeyCodes.THREE,
+      FOUR: Phaser.Input.Keyboard.KeyCodes.FOUR,
+      FIVE: Phaser.Input.Keyboard.KeyCodes.FIVE,
     }) as Record<string, Phaser.Input.Keyboard.Key>;
   }
 
@@ -352,6 +428,17 @@ export class ForestScene extends Phaser.Scene {
       const state = GameState.getInstance();
       if (!state.run) return;
 
+      // 每帧最开始就更新角色朝向：用相机实时滚动 + 鼠标屏幕坐标算出精确世界坐标
+      try {
+        const pointer = this.input.activePointer;
+        const cam = this.cameras.main;
+        const worldX = cam.scrollX + pointer.x / cam.zoom;
+        const worldY = cam.scrollY + pointer.y / cam.zoom;
+        this.player.faceTo(worldX, worldY);
+      } catch {
+        // 朝向计算失败不应阻塞游戏主逻辑
+      }
+
       // 清理已销毁的敌人引用，防止数组污染导致异常
       this.enemies = this.enemies.filter((e) => e && e.container?.active);
 
@@ -359,9 +446,14 @@ export class ForestScene extends Phaser.Scene {
       this.handleCombat(delta);
       this.handleDodge(delta);
       this.handleSkills();
+      this.handleChanneling();
+      this.handleConsumables();
       this.handleBagInput();
+      this.handleSkillPage();
+      this.handleCharacterPage();
       this.handlePortal();
       this.updateProjectiles(delta);
+      this.updateLightOrbs(delta);
       this.updateEnemies(delta);
       this.updateFog(delta);
       this.updateHUD();
@@ -388,29 +480,25 @@ export class ForestScene extends Phaser.Scene {
     if (this.keys.A.isDown) vx = -1;
     if (this.keys.D.isDown) vx = 1;
     this.player.move(vx, vy);
-
-    // 武器始终朝向鼠标位置
-    const pointer = this.input.activePointer;
-    this.player.faceTo(pointer.worldX, pointer.worldY);
   }
 
   private handleCombat(_delta: number) {
     if (Phaser.Input.Keyboard.JustDown(this.keys.SPACE)) {
-      // 只传入还活着且 container 有效的敌人
-      const validEnemies = this.enemies
-        .filter((e) => e && e.container?.active && !e.isDead())
-        .map((e) => e.container);
-      const target = this.player.attackNearest(validEnemies);
-      if (target && target.active) {
-        const enemy = this.enemies.find((e) => e.container === target);
-        if (enemy && !enemy.isDead()) {
-          enemy.takeDamage(this.player.attack);
-          if (!enemy.isDead()) {
-            enemy.knockBack(this.player.container.x, this.player.container.y);
-          } else {
-            this.handleEnemyDeath(enemy);
-          }
-        }
+      if (this.player.attackCooldown > 0) return;
+      this.player.attackCooldown = this.player.getAttackInterval();
+
+      const cls = this.player.getClassType();
+      if (cls === 'mage') {
+        this.mageAttack();
+      } else if (cls === 'warrior') {
+        this.warriorAttack();
+      } else if (cls === 'sage') {
+        this.sageAttack();
+      }
+
+      // 法力流溢：普通攻击附带追踪光球
+      if (this.player.isManaOverflowActive()) {
+        this.spawnLightOrb();
       }
     }
 
@@ -418,6 +506,201 @@ export class ForestScene extends Phaser.Scene {
     for (const enemy of this.enemies) {
       if (!enemy || enemy.isDead() || !enemy.container?.active) continue;
       enemy.tryAttack(this.player);
+    }
+  }
+
+  private mageAttack() {
+    const px = this.player.container.x;
+    const py = this.player.container.y;
+    const angle = this.player.getFacingAngle();
+    const speed = 350;
+    const directDmg = this.player.attack;
+    const splashDmg = Math.floor(this.player.attack * 0.5);
+
+    const container = this.add.container(px, py);
+    const glow = this.add.ellipse(0, 0, 16, 16, 0x22d3ee, 0.35);
+    const core = this.add.ellipse(0, 0, 8, 8, 0x93c5fd, 0.9);
+    container.add([glow, core]);
+    container.setDepth(998);
+
+    this.projectiles.push({
+      container,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      damage: splashDmg,
+      directHitDamage: directDmg,
+      splashDamage: splashDmg,
+      range: 250,
+      traveled: 0,
+      aoeRange: 35,
+    });
+  }
+
+  private warriorAttack() {
+    const px = this.player.container.x;
+    const py = this.player.container.y;
+    const angle = this.player.getFacingAngle();
+    const range = 55;
+    const halfCone = Math.PI / 6;
+    const dmg = Math.floor(this.player.attack * 1.1);
+
+    // 扇形挥砍动画
+    const arc = this.add.graphics();
+    arc.fillStyle(0xc0c0c0, 0.4);
+    arc.slice(px, py, range, angle - halfCone, angle + halfCone);
+    arc.fillPath();
+    arc.setDepth(999);
+    this.tweens.add({
+      targets: arc,
+      alpha: 0,
+      duration: 200,
+      onComplete: () => arc.destroy(),
+    });
+
+    // 扇形内伤害判定
+    for (const enemy of this.enemies) {
+      if (!enemy || enemy.isDead() || !enemy.container?.active) continue;
+      const dist = Phaser.Math.Distance.Between(px, py, enemy.container.x, enemy.container.y);
+      if (dist > range) continue;
+      const angleToEnemy = Phaser.Math.Angle.Between(px, py, enemy.container.x, enemy.container.y);
+      let angleDiff = Math.abs(Phaser.Math.Angle.Wrap(angleToEnemy - angle));
+      if (angleDiff > Math.PI) angleDiff = Math.PI * 2 - angleDiff;
+      if (angleDiff <= halfCone) {
+        enemy.takeDamage(dmg);
+        if (!enemy.isDead()) {
+          enemy.knockBack(px, py);
+        } else {
+          this.handleEnemyDeath(enemy);
+        }
+      }
+    }
+  }
+
+  private sageAttack() {
+    const px = this.player.container.x;
+    const py = this.player.container.y;
+    const range = 200;
+    const dmg = Math.floor(this.player.attack * 0.8);
+
+    const targets = this.enemies
+      .filter((e) => e && !e.isDead() && e.container?.active)
+      .map((e) => ({
+        enemy: e,
+        dist: Phaser.Math.Distance.Between(px, py, e.container.x, e.container.y),
+      }))
+      .filter((t) => t.dist <= range)
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, 3)
+      .map((t) => t.enemy);
+
+    if (targets.length === 0) return;
+
+    for (const enemy of targets) {
+      const container = this.add.container(px, py);
+      const glow = this.add.ellipse(0, 0, 14, 14, 0xfef08a, 0.35);
+      const core = this.add.ellipse(0, 0, 8, 8, 0xfbbf24, 0.9);
+      container.add([glow, core]);
+      container.setDepth(998);
+
+      this.lightOrbs.push({
+        container,
+        damage: dmg,
+        target: enemy,
+        life: 2500,
+      });
+
+      const flash = this.add.ellipse(px, py, 10, 10, 0xfbbf24, 0.6);
+      flash.setDepth(999);
+      this.tweens.add({
+        targets: flash,
+        alpha: 0,
+        scaleX: 2,
+        scaleY: 2,
+        duration: 200,
+        onComplete: () => flash.destroy(),
+      });
+    }
+  }
+
+  private spawnLightOrb() {
+    const px = this.player.container.x;
+    const py = this.player.container.y;
+
+    // 寻找最近敌人
+    let nearest: Enemy | null = null;
+    let nearestDist = Infinity;
+    for (const enemy of this.enemies) {
+      if (!enemy || enemy.isDead() || !enemy.container?.active) continue;
+      const dist = Phaser.Math.Distance.Between(px, py, enemy.container.x, enemy.container.y);
+      if (dist < nearestDist) {
+        nearest = enemy;
+        nearestDist = dist;
+      }
+    }
+
+    if (!nearest) return;
+
+    const container = this.add.container(px, py);
+    const core = this.add.ellipse(0, 0, 10, 10, 0x22d3ee, 0.9);
+    const glow = this.add.ellipse(0, 0, 18, 18, 0x93c5fd, 0.4);
+    container.add([glow, core]);
+    container.setDepth(998);
+
+    this.lightOrbs.push({
+      container,
+      damage: this.player.attack,
+      target: nearest,
+      life: 3000,
+    });
+  }
+
+  private updateLightOrbs(delta: number) {
+    const speed = 300;
+    const dtSec = delta / 1000;
+
+    for (let i = this.lightOrbs.length - 1; i >= 0; i--) {
+      const orb = this.lightOrbs[i];
+      if (!orb.container.active) {
+        this.lightOrbs.splice(i, 1);
+        continue;
+      }
+
+      orb.life -= delta;
+      if (orb.life <= 0) {
+        orb.container.destroy();
+        this.lightOrbs.splice(i, 1);
+        continue;
+      }
+
+      const target = orb.target;
+      if (!target || target.isDead() || !target.container?.active) {
+        orb.container.destroy();
+        this.lightOrbs.splice(i, 1);
+        continue;
+      }
+
+      const angle = Phaser.Math.Angle.Between(orb.container.x, orb.container.y, target.container.x, target.container.y);
+      orb.container.x += Math.cos(angle) * speed * dtSec;
+      orb.container.y += Math.sin(angle) * speed * dtSec;
+
+      const dist = Phaser.Math.Distance.Between(orb.container.x, orb.container.y, target.container.x, target.container.y);
+      if (dist < 15) {
+        target.takeDamage(orb.damage);
+        if (target.isDead()) {
+          this.handleEnemyDeath(target);
+        }
+
+        // 命中特效
+        const burst = this.add.ellipse(orb.container.x, orb.container.y, 20, 20, 0x22d3ee, 0.5);
+        burst.setDepth(999);
+        this.tweens.add({
+          targets: burst, alpha: 0, scaleX: 2, scaleY: 2, duration: 200,
+          onComplete: () => burst.destroy(),
+        });
+
+        orb.container.destroy();
+        this.lightOrbs.splice(i, 1);
+      }
     }
   }
 
@@ -431,7 +714,13 @@ export class ForestScene extends Phaser.Scene {
   private handleSkills() {
     const skillKeys = ['T', 'Y', 'U', 'I', 'O'];
     const pointer = this.input.activePointer;
-    for (let i = 0; i < skillKeys.length; i++) {
+
+    // 蓄力技能：火球术(T) 和 星落(Y)
+    this.handleSkillCharge('T', 0, 3000, pointer);
+    this.handleSkillCharge('Y', 1, 1000, pointer);
+
+    // 其他技能瞬发
+    for (let i = 2; i < skillKeys.length; i++) {
       if (Phaser.Input.Keyboard.JustDown(this.keys[skillKeys[i]])) {
         const result = this.player.castSkill(i, pointer.worldX, pointer.worldY);
         if (result) {
@@ -441,7 +730,106 @@ export class ForestScene extends Phaser.Scene {
     }
   }
 
-  private castSkillEffect(skill: import('../types').Skill, targetX: number, targetY: number) {
+  private handleSkillCharge(keyName: string, skillIndex: number, maxChargeTime: number, pointer: Phaser.Input.Pointer) {
+    const key = this.keys[keyName];
+    const skill = this.player.getSkills()[skillIndex];
+    if (!skill) return;
+
+    // 开始蓄力：按住键，且未在蓄力中，且技能可用
+    if (key.isDown && !this.player.getIsCharging()) {
+      if (this.player.getSkillCooldown(skill.id) <= 0 && this.player.mp >= skill.mpCost) {
+        this.player.startCharge(skill.id, maxChargeTime);
+      }
+    }
+
+    // 释放：松开键，且正在蓄力同一技能
+    if (Phaser.Input.Keyboard.JustUp(key) && this.player.getIsCharging() && this.player.getChargeSkillId() === skill.id) {
+      // 星落未满蓄力取消
+      if (skill.id === 'meteor' && this.player.getChargeRatio() < 1) {
+        this.player.cancelCharge();
+        return;
+      }
+      const chargeRatio = this.player.releaseCharge();
+      const result = this.player.castSkill(skillIndex, pointer.worldX, pointer.worldY);
+      if (result) {
+        this.castSkillEffect(result.skill, result.targetX, result.targetY, chargeRatio);
+      }
+    }
+  }
+
+  private handleChanneling() {
+    if (!this.player.getIsCharging()) return;
+    const skillId = this.player.getChargeSkillId();
+    const ratio = this.player.getChargeRatio();
+
+    // 星落：蓄满1秒后自动释放
+    if (skillId === 'meteor' && ratio >= 1) {
+      const pointer = this.input.activePointer;
+      const cam = this.cameras.main;
+      const worldX = cam.scrollX + pointer.x / cam.zoom;
+      const worldY = cam.scrollY + pointer.y / cam.zoom;
+      const chargeRatio = this.player.releaseCharge();
+      const skill = this.player.getSkills().find((s) => s.id === 'meteor');
+      if (skill) {
+        const result = this.player.castSkill(1, worldX, worldY);
+        if (result) {
+          this.castSkillEffect(result.skill, result.targetX, result.targetY, chargeRatio);
+        }
+      }
+    }
+  }
+
+  private handleConsumables() {
+    const hotkeys = ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE'];
+    for (let i = 0; i < hotkeys.length; i++) {
+      if (Phaser.Input.Keyboard.JustDown(this.keys[hotkeys[i]])) {
+        this.useConsumableAtIndex(i);
+      }
+    }
+  }
+
+  private useConsumableAtIndex(index: number) {
+    const slot = this.runInventory.slots[index];
+    const item = slot?.item;
+    if (!item) {
+      this.showFloatingText(this.player.container.x, this.player.container.y - 20, '空', 0x94a3b8);
+      return;
+    }
+    if ('rarity' in item) {
+      this.showFloatingText(this.player.container.x, this.player.container.y - 20, '不是消耗品', 0xef4444);
+      return;
+    }
+
+    const consumable = item as import('../types').Consumable;
+    const applied = this.player.applyConsumableEffect(consumable);
+    if (!applied) {
+      if (consumable.type === 'instantHp' || consumable.type === 'slowHp') {
+        this.showFloatingText(this.player.container.x, this.player.container.y - 20, '生命已满', 0xef4444);
+      } else if (consumable.type === 'instantMp' || consumable.type === 'slowMp') {
+        this.showFloatingText(this.player.container.x, this.player.container.y - 20, '法力已满', 0xef4444);
+      }
+      return;
+    }
+
+    this.runInventory.removeItem(index);
+
+    const px = this.player.container.x;
+    const py = this.player.container.y;
+    this.showFloatingText(px, py - 20, `使用 ${consumable.name}`, 0x22c55e);
+
+    const burst = this.add.ellipse(px, py, 30, 30, 0x22c55e, 0.5);
+    burst.setDepth(999);
+    this.tweens.add({
+      targets: burst,
+      alpha: 0,
+      scaleX: 2,
+      scaleY: 2,
+      duration: 300,
+      onComplete: () => burst.destroy(),
+    });
+  }
+
+  private castSkillEffect(skill: import('../types').Skill, targetX: number, targetY: number, chargeRatio: number = 0) {
     const px = this.player.container.x;
     const py = this.player.container.y;
 
@@ -480,28 +868,116 @@ export class ForestScene extends Phaser.Scene {
       return;
     }
 
+    if (skill.id === 'manaOverflow') {
+      // 法力流溢：开启增益状态
+      this.player.activateManaOverflow();
+      // 蓝色光环扩散特效
+      const ring = this.add.ellipse(px, py, 60, 60, 0x22d3ee, 0.5);
+      ring.setDepth(999);
+      this.tweens.add({
+        targets: ring, alpha: 0, scaleX: 3, scaleY: 3, duration: 500,
+        onComplete: () => ring.destroy(),
+      });
+      // 内部闪光
+      const flash = this.add.ellipse(px, py, 40, 40, 0x93c5fd, 0.7);
+      flash.setDepth(999);
+      this.tweens.add({
+        targets: flash, alpha: 0, scaleX: 2, scaleY: 2, duration: 400,
+        onComplete: () => flash.destroy(),
+      });
+      return;
+    }
+
+    if (skill.id === 'meteor') {
+      // 星落：陨星从天而降
+      const range = skill.range ?? 120;
+      const damage = Math.floor(this.player.attack * ((skill.damagePercent ?? 500) / 100));
+
+      // 预警圈
+      const warning = this.add.ellipse(targetX, targetY, range * 2, range * 2, 0xff4500, 0.25);
+      warning.setDepth(998);
+
+      // 陨星本体（从上方落下）
+      const meteor = this.add.ellipse(targetX, targetY - 300, 50, 70, 0xff4500);
+      meteor.setDepth(999);
+
+      this.tweens.add({
+        targets: warning,
+        alpha: 0,
+        scaleX: 0.5,
+        scaleY: 0.5,
+        duration: 200,
+        ease: 'Quad.easeIn',
+        onComplete: () => warning.destroy(),
+      });
+
+      this.tweens.add({
+        targets: meteor,
+        y: targetY,
+        duration: 200,
+        ease: 'Quad.easeIn',
+        onComplete: () => {
+          // 伤害结算
+          for (const enemy of this.enemies) {
+            if (!enemy || enemy.isDead() || !enemy.container?.active) continue;
+            const dist = Phaser.Math.Distance.Between(targetX, targetY, enemy.container.x, enemy.container.y);
+            if (dist <= range) {
+              enemy.takeDamage(damage);
+              if (enemy.isDead()) {
+                this.handleEnemyDeath(enemy);
+              }
+            }
+          }
+
+          // 爆炸特效
+          const burst = this.add.ellipse(targetX, targetY, range * 2.5, range * 2.5, 0xff4500, 0.5);
+          burst.setDepth(999);
+          this.tweens.add({
+            targets: burst, alpha: 0, scaleX: 1.8, scaleY: 1.8, duration: 400,
+            onComplete: () => burst.destroy(),
+          });
+
+          const flash = this.add.ellipse(targetX, targetY, 60, 60, 0xffaa00, 0.8);
+          flash.setDepth(999);
+          this.tweens.add({
+            targets: flash, alpha: 0, scaleX: 3, scaleY: 3, duration: 250,
+            onComplete: () => flash.destroy(),
+          });
+
+          meteor.destroy();
+        },
+      });
+      return;
+    }
+
     if (skill.id === 'fireball') {
-      // 火球术：发射飞行投射物
+      // 火球术：蓄力发射飞行投射物
       const angle = Phaser.Math.Angle.Between(px, py, targetX, targetY);
       const speed = 420;
+
+      // 蓄力影响：大小 1x~2.5x，伤害 200%~400%，AOE范围 60~140
+      const scale = 1 + chargeRatio * 1.5;
+      const basePercent = skill.damagePercent ?? 200;
+      const damage = Math.floor(this.player.attack * (basePercent / 100) * (1 + chargeRatio));
+      const aoeRange = 60 + chargeRatio * 80;
+
       const container = this.add.container(px, py);
-      const glow = this.add.ellipse(0, 0, 28, 28, 0xf97316, 0.35);
-      const core = this.add.ellipse(0, 0, 14, 14, 0xff4500, 0.9);
-      const trail = this.add.ellipse(-6, 0, 10, 6, 0xffa500, 0.4);
+      const glow = this.add.ellipse(0, 0, 28 * scale, 28 * scale, 0xf97316, 0.35);
+      const core = this.add.ellipse(0, 0, 14 * scale, 14 * scale, 0xff4500, 0.9);
+      const trail = this.add.ellipse(-6 * scale, 0, 10 * scale, 6 * scale, 0xffa500, 0.4);
       container.add([glow, trail, core]);
       container.setDepth(998);
 
-      // 旋转火球使其朝向飞行方向
       container.setRotation(angle);
 
       this.projectiles.push({
         container,
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed,
-        damage: skill.damage ?? this.player.attack,
+        damage,
         range: skill.range ?? 200,
         traveled: 0,
-        aoeRange: 60,
+        aoeRange,
       });
       return;
     }
@@ -509,11 +985,14 @@ export class ForestScene extends Phaser.Scene {
     if (skill.aoe) {
       // AOE 技能：以目标点为中心的范围伤害
       const range = skill.range ?? 80;
+      const dmg = skill.damagePercent
+        ? Math.floor(this.player.attack * (skill.damagePercent / 100))
+        : (skill.damage ?? this.player.attack);
       for (const enemy of this.enemies) {
         if (!enemy || enemy.isDead() || !enemy.container?.active) continue;
         const dist = Phaser.Math.Distance.Between(targetX, targetY, enemy.container.x, enemy.container.y);
         if (dist <= range) {
-          enemy.takeDamage(skill.damage ?? this.player.attack);
+          enemy.takeDamage(dmg);
           if (enemy.isDead()) {
             this.handleEnemyDeath(enemy);
           }
@@ -529,6 +1008,9 @@ export class ForestScene extends Phaser.Scene {
       // 单体技能：对最近敌人造成伤害
       let nearest: Enemy | null = null;
       let nearestDist = Infinity;
+      const dmg = skill.damagePercent
+        ? Math.floor(this.player.attack * (skill.damagePercent / 100))
+        : (skill.damage ?? this.player.attack);
       for (const enemy of this.enemies) {
         if (!enemy || enemy.isDead() || !enemy.container?.active) continue;
         const dist = Phaser.Math.Distance.Between(targetX, targetY, enemy.container.x, enemy.container.y);
@@ -538,7 +1020,7 @@ export class ForestScene extends Phaser.Scene {
         }
       }
       if (nearest) {
-        nearest.takeDamage(skill.damage ?? this.player.attack);
+        nearest.takeDamage(dmg);
         if (nearest.isDead()) {
           this.handleEnemyDeath(nearest);
         }
@@ -568,34 +1050,37 @@ export class ForestScene extends Phaser.Scene {
       proj.traveled += Math.abs(proj.vx * dtSec) + Math.abs(proj.vy * dtSec);
 
       // 碰撞检测
-      let hit = false;
+      let hitEnemy: Enemy | null = null;
       for (const enemy of this.enemies) {
         if (!enemy || enemy.isDead() || !enemy.container?.active) continue;
         const dist = Phaser.Math.Distance.Between(proj.container.x, proj.container.y, enemy.container.x, enemy.container.y);
         if (dist < 20) {
-          hit = true;
+          hitEnemy = enemy;
           break;
         }
       }
 
       // 命中或超出最大距离则爆炸
-      if (hit || proj.traveled >= proj.range) {
-        this.explodeProjectile(proj);
+      if (hitEnemy || proj.traveled >= proj.range) {
+        this.explodeProjectile(proj, hitEnemy);
         this.projectiles.splice(i, 1);
       }
     }
   }
 
-  private explodeProjectile(proj: typeof this.projectiles[0]) {
+  private explodeProjectile(proj: typeof this.projectiles[0], directHit?: Enemy | null) {
     const ex = proj.container.x;
     const ey = proj.container.y;
 
-    // AOE 伤害
+    // AOE 伤害：区分直接命中与溅射
     for (const enemy of this.enemies) {
       if (!enemy || enemy.isDead() || !enemy.container?.active) continue;
       const dist = Phaser.Math.Distance.Between(ex, ey, enemy.container.x, enemy.container.y);
       if (dist <= proj.aoeRange) {
-        enemy.takeDamage(proj.damage);
+        const dmg = (enemy === directHit && proj.directHitDamage !== undefined)
+          ? proj.directHitDamage
+          : (proj.splashDamage ?? proj.damage);
+        enemy.takeDamage(dmg);
         if (enemy.isDead()) {
           this.handleEnemyDeath(enemy);
         }
@@ -625,6 +1110,18 @@ export class ForestScene extends Phaser.Scene {
   private handleBagInput() {
     if (Phaser.Input.Keyboard.JustDown(this.keys.B)) {
       this.toggleBag();
+    }
+  }
+
+  private handleSkillPage() {
+    if (Phaser.Input.Keyboard.JustDown(this.keys.N)) {
+      this.scene.start('SkillScene');
+    }
+  }
+
+  private handleCharacterPage() {
+    if (Phaser.Input.Keyboard.JustDown(this.keys.C)) {
+      this.scene.start('CharacterScene');
     }
   }
 
@@ -679,7 +1176,7 @@ export class ForestScene extends Phaser.Scene {
       color: '#e2e8f0',
       align: 'center',
       lineSpacing: 4,
-    }).setOrigin(0.5).setScrollFactor(0).setDepth(4002);
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(4004);
     this.bagUI.push(this.bagInfoText);
 
     this.renderBagContents(cx, cy);
@@ -747,7 +1244,7 @@ export class ForestScene extends Phaser.Scene {
     const cellW = 72;
     const cellH = 50;
 
-    const invTitle = this.add.text(invStartX + cellW * 3 - 20, invStartY - 25, '物品', {
+    const invTitle = this.add.text(invStartX + cellW * 2, invStartY - 25, '物品', {
       fontSize: '14px',
       color: '#94a3b8',
       fontStyle: 'bold',
@@ -838,13 +1335,15 @@ export class ForestScene extends Phaser.Scene {
     const cls = CLASSES.find((c) => c.id === state.save.selectedClass);
     if (!cls) return;
 
-    this.player.maxHp = cls.baseStats.maxHp + (bonus.maxHp ?? 0);
+    const levelMultiplier = 1 + (state.save.level - 1) * 0.05;
+
+    this.player.maxHp = Math.floor(cls.baseStats.maxHp * levelMultiplier) + (bonus.maxHp ?? 0);
     this.player.hp = Math.min(this.player.hp, this.player.maxHp);
-    this.player.maxMp = cls.baseStats.maxMp + (bonus.mp ?? 0);
+    this.player.maxMp = Math.floor(cls.baseStats.maxMp * levelMultiplier) + (bonus.mp ?? 0);
     this.player.mp = Math.min(this.player.mp, this.player.maxMp);
-    this.player.attack = cls.baseStats.attack + (bonus.attack ?? 0);
-    this.player.defense = cls.baseStats.defense + (bonus.defense ?? 0);
-    this.player.speed = cls.baseStats.speed + (bonus.speed ?? 0);
+    this.player.attack = Math.floor(cls.baseStats.attack * levelMultiplier) + (bonus.attack ?? 0);
+    this.player.defense = Math.floor(cls.baseStats.defense * levelMultiplier) + (bonus.defense ?? 0);
+    this.player.speed = Math.floor(cls.baseStats.speed * levelMultiplier) + (bonus.speed ?? 0);
   }
 
   private showBagInfo(text: string) {
@@ -1096,7 +1595,7 @@ export class ForestScene extends Phaser.Scene {
       state.run.elapsedTime += delta;
       state.run.fogValue = Math.min(GAME_CONFIG.maxFog, state.run.elapsedTime * GAME_CONFIG.fogGrowthRate * 0.001);
     }
-    this.fogSystem.update(this.player.container.x, this.player.container.y);
+    this.fogSystem.update(this.player.container.x, this.player.container.y, this.player.getCurrentVisionRadius(GAME_CONFIG.visionRadius));
   }
 
   private updateHUD() {
@@ -1113,6 +1612,17 @@ export class ForestScene extends Phaser.Scene {
       this.fogText.setText(`迷雾: ${Math.floor(state.run.fogValue)}%`);
       this.depthText.setText(`层数: ${state.run.forestDepth}`);
       this.killText.setText(`击杀: ${state.run.enemiesKilled}`);
+
+      const expRequired = getExpToNextLevel(state.save.level);
+      const expRatio = state.save.exp / expRequired;
+      this.expBar.setScale(Math.max(0, expRatio), 1);
+      this.levelText.setText(`等级: ${state.save.level}`);
+
+      if (state.save.level > this.lastLevel) {
+        this.lastLevel = state.save.level;
+        this.applyEquipmentStats();
+        this.showFloatingText(this.player.container.x, this.player.container.y - 30, `升级！Lv.${state.save.level}`, 0xfbbf24);
+      }
     }
 
     // 更新技能冷却显示
@@ -1128,6 +1638,18 @@ export class ForestScene extends Phaser.Scene {
         slot.cooldownOverlay.setY(slot.bg.y - (1 - ratio) * 44 / 2);
       } else {
         slot.cooldownOverlay.setVisible(false);
+      }
+    }
+
+    // 更新消耗品快捷栏
+    for (const slot of this.consumableSlots) {
+      const invItem = this.runInventory.slots[slot.index]?.item;
+      if (invItem && !('rarity' in invItem)) {
+        slot.nameText.setText(invItem.name.slice(0, 4));
+        slot.bg.setStrokeStyle(2, 0x22c55e);
+      } else {
+        slot.nameText.setText('');
+        slot.bg.setStrokeStyle(2, 0x334155);
       }
     }
   }

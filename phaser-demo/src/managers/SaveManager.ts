@@ -4,7 +4,7 @@ const SAVE_KEY = 'dark_journey_save_v1';
 
 export const defaultSave: GameSave = {
   selectedClass: null,
-  cityInventory: Array.from({ length: 18 }, () => ({ item: null })),
+  cityInventory: Array.from({ length: 24 }, () => ({ item: null })),
   cityEquipment: {
     weapon: null,
     helmet: null,
@@ -18,6 +18,9 @@ export const defaultSave: GameSave = {
   gold: 0,
   bestiary: [],
   equipmentCodex: [],
+  level: 1,
+  exp: 0,
+  skillLevels: {},
 };
 
 export class SaveManager {

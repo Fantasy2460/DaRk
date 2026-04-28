@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/fantasy/workspace/DaRk status)",
+      "Bash(brew install *)",
+      "Read(//opt/homebrew/bin/**)",
+      "Read(//usr/local/bin/**)",
+      "Bash(curl -I --connect-timeout 10 https://raw.githubusercontent.com)",
+      "Bash(wget --version)",
+      "Bash(networksetup -getwebproxy Wi-Fi)",
+      "Bash(networksetup -getwebproxy \"Ethernet\")",
+      "Bash(npm install *)",
+      "Bash(npx vite *)",
+      "Bash(curl -s http://localhost:5173/)",
+      "Bash(curl -s http://localhost:5173/src/main.ts)",
+      "Bash(curl -s http://localhost:5173/src/scenes/GameScene.ts)",
+      "Bash(npx tsc *)",
+      "Bash(python3 -c ' *)",
+      "Bash(npm run *)",
+      "Bash(git add *)"
+    ]
+  }
+}

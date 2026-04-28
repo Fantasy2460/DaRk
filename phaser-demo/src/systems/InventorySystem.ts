@@ -4,9 +4,14 @@ export class InventorySystem {
   slots: InventorySlot[];
   capacity: number;
 
-  constructor(slots: InventorySlot[], capacity = 18) {
-    this.slots = slots;
+  constructor(slots: InventorySlot[], capacity = 24) {
     this.capacity = capacity;
+    // 兼容旧存档：如果传入的 slots 长度不足，自动补满空位
+    if (slots.length < capacity) {
+      this.slots = [...slots, ...Array.from({ length: capacity - slots.length }, () => ({ item: null }))];
+    } else {
+      this.slots = slots;
+    }
   }
 
   /** 寻找第一个空位 */

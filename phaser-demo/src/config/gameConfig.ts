@@ -7,12 +7,12 @@ export const GAME_CONFIG = {
   playerSpeed: 180,
   dodgeCooldown: 800,
   dodgeInvincibleTime: 500,
-  attackCooldown: 400,
+  attackCooldown: 1000,
   visionRadius: 160,
   fogGrowthRate: 0.5,
   maxFog: 100,
-  inventoryRows: 3,
-  inventoryCols: 6,
+  inventoryRows: 6,
+  inventoryCols: 4,
   bossSpawnChance: 0.15,
   enemySpawnCount: { min: 6, max: 12 },
   treeCount: 24,
@@ -41,3 +41,9 @@ export const SLOT_NAMES: Record<string, string> = {
   accessory: '首饰',
   offhand: '副手',
 };
+
+export function getExpToNextLevel(level: number): number {
+  return level * 100;
+}
+
+export const MAX_PLAYER_LEVEL = 9;
