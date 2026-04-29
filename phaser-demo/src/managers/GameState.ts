@@ -10,7 +10,8 @@ export class GameState {
   run: RunState | null = null;
 
   private constructor() {
-    this.save = SaveManager.load();
+    // 同步加载本地兜底数据，随后可通过 syncFromServer() 拉取云端最新存档
+    this.save = SaveManager.loadLocal();
   }
 
   static getInstance(): GameState {
@@ -18,6 +19,16 @@ export class GameState {
       GameState.instance = new GameState();
     }
     return GameState.instance;
+  }
+
+  /** 登录后调用：从服务器同步最新存档 */
+  async syncFromServer(): Promise<void> {
+    try {
+      const serverSave = await SaveManager.load();
+      this.save = serverSave;
+    } catch (e) {
+      console.warn('同步服务器存档失败:', e);
+    }
   }
 
   /** 选择职业 */
@@ -111,12 +122,13 @@ export class GameState {
   }
 
   persist(): void {
-    SaveManager.save(this.save);
+    // fire-and-forget，不阻塞游戏主循环
+    SaveManager.save(this.save).catch(() => {});
   }
 
   resetAll(): void {
     SaveManager.reset();
-    this.save = SaveManager.load();
+    this.save = SaveManager.loadLocal();
     this.run = null;
   }
 }

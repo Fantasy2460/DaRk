@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dark-journey-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dark
+      POSTGRES_PASSWORD: journey123
+      POSTGRES_DB: dark_journey
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dark -d dark_journey"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 可选：Redis（阶段二匹配队列、阶段三实时状态缓存用）
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: dark-journey-redis
+  #   restart: unless-stopped
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+
+  # 后端服务（部署时启用）
+  # server:
+  #   build: .
+  #   container_name: dark-journey-server
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3001:3001"
+  #   environment:
+  #     DATABASE_URL: postgresql://dark:journey123@postgres:5432/dark_journey?schema=public
+  #     JWT_SECRET: ${JWT_SECRET}
+  #     PORT: 3001
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+
+volumes:
+  postgres_data:
+  # redis_data:

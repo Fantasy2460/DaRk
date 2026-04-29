@@ -25,17 +25,43 @@ export all_proxy=socks5://127.0.0.1:7890
 - **游戏引擎**：Phaser 3.80.1（Arcade Physics）
 - **语言**：TypeScript 5.4（ES2020，严格模式）
 - **构建工具**：Vite 5.4
-- **持久化**：LocalStorage（`dark_journey_save_v1`）
+- **持久化**：LocalStorage（`dark_journey_save_v1`）+ 后端 PostgreSQL/SQLite（多人阶段）
+
+### 后端技术栈（server/）
+
+- **运行时**：Node.js 20 + TypeScript 5.4
+- **Web 框架**：Express 4
+- **实时通信**：Socket.io 4
+- **ORM**：Prisma 5（默认 SQLite，可切 PostgreSQL）
+- **认证**：JWT + bcrypt
 
 ## 开发命令
 
-所有命令在 `phaser-demo/` 目录下执行：
+开发时需要**同时运行前后端**（两个终端）：
 
 ```bash
-npm run dev      # 启动开发服务器（localhost:5173）
+# 终端 1：后端（项目根目录/server/）
+cd server && npm run dev        # localhost:3001，tsx watch 自动热重载
+
+# 终端 2：前端（项目根目录/phaser-demo/）
+cd phaser-demo && npm run dev   # localhost:5173，Vite 热重载
+```
+
+其他常用命令：
+
+```bash
+# 前端
 npm run build    # tsc 类型检查 + vite 构建（输出到 dist/）
 npm run preview  # 预览生产构建
+
+# 后端
+npm run build           # 编译到 dist/
+npx prisma migrate dev  # 数据库迁移（schema 变更后执行）
+npx prisma generate     # 重新生成 Prisma Client
+npx prisma studio       # GUI 管理数据库
 ```
+
+**约定**：修改代码后 Claude 应主动检查前后端进程是否在运行，必要时自动重启，无需用户手动操作。Vite 与 tsx watch 通常能自动热重载；若修改了 Prisma schema、环境变量或出现端口占用，则需要手动重启对应服务。
 
 ## 项目结构
 
@@ -65,7 +91,27 @@ phaser-demo/src/
 │   └── FogSystem.ts         # 动态迷雾：Canvas 径向渐变纹理，随玩家位置移动
 └── managers/
     ├── GameState.ts     # 全局单例状态：局外存档（GameSave）与局内状态（RunState）
-    └── SaveManager.ts   # LocalStorage 读写、导入/导出 JSON
+    └── SaveManager.ts   # 存档管理：优先同步服务器，失败回退 LocalStorage
+
+server/
+├── src/
+│   ├── index.ts              # Express + Socket.io 入口
+│   ├── config/
+│   │   └── database.ts       # Prisma Client 单例
+│   ├── middleware/
+│   │   └── auth.ts           # JWT 校验中间件
+│   ├── routes/
+│   │   ├── auth.ts           # 注册/登录 API
+│   │   └── character.ts      # 角色 CRUD、存档读/写 API
+│   ├── services/
+│   │   ├── AuthService.ts    # 认证业务逻辑
+│   │   └── CharacterService.ts # 角色/存档业务逻辑
+│   ├── network/
+│   │   └── SocketHandlers.ts # Socket.io 房间/转发事件
+│   └── types/
+│       └── game.ts           # 前后端共享类型
+└── prisma/
+    └── schema.prisma         # 数据库模型定义
 ```
 
 ## 核心架构
@@ -81,6 +127,25 @@ phaser-demo/src/
 - `startRun()`：从 `GameSave.cityEquipment` 复制装备到 `RunState.runEquipment`，初始化 HP/MP。
 - `extractRun()`：存活撤离时，将 `RunState.runInventory` 的物品按顺序填入 `GameSave.cityInventory` 的空位；记录图鉴；清空 `RunState`。
 - `dieInRun()`：死亡时直接丢弃整个 `RunState`，不合并任何物品回主城。
+
+**多人阶段存档策略**：
+`SaveManager` 采用「服务器优先 + 本地兜底」双写：
+- 网络正常时，`save()` 异步写入后端 API（`POST /api/characters/:id/save`），同时保留 LocalStorage 副本
+- 读档时优先调用 `GET /api/characters/:id/save`，失败则回退 LocalStorage
+- `GameState.persist()` 使用 fire-and-forget，不阻塞游戏主循环
+- 前端新增 `api.syncFromServer()`，登录成功后调用以拉取云端最新存档
+
+### 2. 后端架构（server/）
+
+当前为**阶段一：账号 + 云存档 + 基础房间转发**。
+
+**REST API**：Express 提供注册/登录/角色/存档 CRUD，JWT 鉴权。
+**实时通信**：Socket.io 提供房间系统（加入/准备/开始/移动/攻击事件转发），当前阶段不做权威校验，仅做消息中转。
+**数据库**：Prisma ORM 管理 28 张表，开发期默认 SQLite，生产切换 PostgreSQL。
+
+后续阶段演进：
+- **阶段二**：组队大厅 + 匹配队列（Redis `match_queue`）
+- **阶段三**：局内权威服务器（`GameLoop` 20fps tick，敌人 AI、伤害计算、掉落判定全部 server authoritative）
 
 ### 2. 程序生成图形
 

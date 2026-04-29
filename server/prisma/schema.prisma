@@ -1,0 +1,382 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// 如需切 PostgreSQL，把上方 provider 改为 "postgresql" 即可
+
+model User {
+  id            String   @id @default(uuid())
+  username      String   @unique
+  email         String   @unique
+  passwordHash  String   @map("password_hash")
+  status        Int      @default(0) // 0=正常, 1=封禁, 2=沉默
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  lastLoginAt   DateTime? @map("last_login_at")
+  lastLoginIp   String?   @map("last_login_ip")
+
+  characters    Character[]
+
+  @@map("users")
+}
+
+model Character {
+  id                  String   @id @default(uuid())
+  userId              String   @map("user_id")
+  name                String
+  classType           String   @map("class_type") // warrior / mage / sage
+  level               Int      @default(1)
+  exp                 Int      @default(0)
+  gold                Int      @default(0)
+  totalDeaths         Int      @default(0) @map("total_deaths")
+  totalExtracts       Int      @default(0) @map("total_extracts")
+  deepestDepth        Int      @default(0) @map("deepest_depth")
+  totalEnemiesKilled  Int      @default(0) @map("total_enemies_killed")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stats               CharacterStats?
+  skills              CharacterSkill[]
+  talents             CharacterTalent[]
+  items               PlayerItem[]
+  bestiary            PlayerBestiary[]
+  equipmentCodex      PlayerEquipmentCodex[]
+  achievements        PlayerAchievement[]
+  transactions        CharacterTransaction[]
+  runsAsHost          Run[]    @relation("RunHost")
+  runParticipants     RunParticipant[]
+  partyMemberships    PartyMember[]
+
+  @@map("characters")
+}
+
+model CharacterStats {
+  characterId           String @id @map("character_id")
+  baseHp                Int    @default(0) @map("base_hp")
+  baseMp                Int    @default(0) @map("base_mp")
+  baseAttack            Int    @default(0) @map("base_attack")
+  baseDefense           Int    @default(0) @map("base_defense")
+  baseSpeed             Int    @default(0) @map("base_speed")
+  fogResist             Int    @default(0) @map("fog_resist")
+  availableStatPoints   Int    @default(0) @map("available_stat_points")
+
+  character             Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@map("character_stats")
+}
+
+model CharacterSkill {
+  characterId   String
+  skillId       String
+  level         Int      @default(1)
+  unlockedAt    DateTime? @map("unlocked_at")
+
+  character     Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@id([characterId, skillId])
+  @@map("character_skills")
+}
+
+model CharacterTalent {
+  characterId     String
+  talentId        String
+  pointsInvested  Int @default(0) @map("points_invested")
+
+  character       Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@id([characterId, talentId])
+  @@map("character_talents")
+}
+
+model ItemTemplate {
+  id                String   @id
+  name              String
+  type              String   // equipment / consumable
+  slot              String?
+  rarity            String?
+  baseStatsJson     String?  @map("base_stats_json")
+  consumableType    String?  @map("consumable_type")
+  consumableValue   Int?     @map("consumable_value")
+  consumableDuration Int?    @map("consumable_duration")
+  description       String?
+  maxStack          Int      @default(1) @map("max_stack")
+  buyPrice          Int      @default(0) @map("buy_price")
+  sellPrice         Int      @default(0) @map("sell_price")
+  dropLevelMin      Int?     @map("drop_level_min")
+  dropLevelMax      Int?     @map("drop_level_max")
+  isDeleted         Boolean  @default(false) @map("is_deleted")
+
+  playerItems       PlayerItem[]
+  equipmentCodex    PlayerEquipmentCodex[]
+  shopItems         ShopItem[]
+
+  @@map("item_templates")
+}
+
+model PlayerItem {
+  id            String   @id @default(uuid())
+  characterId   String   @map("character_id")
+  templateId    String   @map("template_id")
+  rarity        String?
+  statsJson     String?  @map("stats_json")
+  location      String   @default("inventory") // inventory / equipped / city_storage
+  slotPosition  Int?     @map("slot_position")
+  equippedSlot  String?  @map("equipped_slot")
+  stackCount    Int      @default(1) @map("stack_count")
+  obtainedFrom  String?  @map("obtained_from")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  character     Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  template      ItemTemplate @relation(fields: [templateId], references: [id])
+  enchantment   ItemEnchantment?
+
+  @@map("player_items")
+}
+
+model ItemEnchantment {
+  itemId        String   @id @map("item_id")
+  enchantLevel  Int      @default(0) @map("enchant_level")
+  bonusStatsJson String? @map("bonus_stats_json")
+
+  item          PlayerItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@map("item_enchantments")
+}
+
+model PlayerBestiary {
+  characterId   String
+  enemyTemplateId String @map("enemy_template_id")
+  killCount     Int    @default(0) @map("kill_count")
+  firstKillAt   DateTime? @map("first_kill_at")
+  lastKillAt    DateTime? @map("last_kill_at")
+
+  character     Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@id([characterId, enemyTemplateId])
+  @@map("player_bestiary")
+}
+
+model PlayerEquipmentCodex {
+  characterId     String
+  templateId      String
+  firstObtainAt   DateTime? @map("first_obtain_at")
+  obtainCount     Int       @default(0) @map("obtain_count")
+
+  character       Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  template        ItemTemplate @relation(fields: [templateId], references: [id])
+
+  @@id([characterId, templateId])
+  @@map("player_equipment_codex")
+}
+
+model Achievement {
+  id            String   @id
+  name          String
+  description   String?
+  category      String?
+  targetValue   Int      @map("target_value")
+
+  playerAchievements PlayerAchievement[]
+
+  @@map("achievements")
+}
+
+model PlayerAchievement {
+  characterId   String
+  achievementId String
+  currentValue  Int       @default(0) @map("current_value")
+  completedAt   DateTime? @map("completed_at")
+
+  character     Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  achievement   Achievement @relation(fields: [achievementId], references: [id])
+
+  @@id([characterId, achievementId])
+  @@map("player_achievements")
+}
+
+model Run {
+  id              String   @id @default(uuid())
+  characterId     String   @map("character_id")
+  partyId         String?  @map("party_id")
+  result          String?  // extracted / died / abandoned
+  startDepth      Int      @map("start_depth")
+  endDepth        Int      @map("end_depth")
+  enemiesKilled   Int      @default(0) @map("enemies_killed")
+  itemsFoundJson  String?  @map("items_found_json")
+  gainedExp       Int      @default(0) @map("gained_exp")
+  gainedGold      Int      @default(0) @map("gained_gold")
+  elapsedTimeSec  Int      @map("elapsed_time_sec")
+  startedAt       DateTime @map("started_at")
+  endedAt         DateTime? @map("ended_at")
+
+  host            Character @relation("RunHost", fields: [characterId], references: [id])
+  participants    RunParticipant[]
+
+  @@map("runs")
+}
+
+model RunParticipant {
+  runId         String
+  characterId   String
+  isHost        Boolean  @default(false) @map("is_host")
+  damageDealt   Int      @default(0) @map("damage_dealt")
+  damageTaken   Int      @default(0) @map("damage_taken")
+  healingDone   Int      @default(0) @map("healing_done")
+  deaths        Int      @default(0)
+
+  run           Run @relation(fields: [runId], references: [id], onDelete: Cascade)
+  character     Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@id([runId, characterId])
+  @@map("run_participants")
+}
+
+model Party {
+  id                String    @id @default(uuid())
+  leaderCharacterId String    @map("leader_character_id")
+  status            String    @default("forming") // forming / in_run / disbanded
+  currentRunId      String?   @map("current_run_id")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  disbandedAt       DateTime? @map("disbanded_at")
+
+  members           PartyMember[]
+
+  @@map("parties")
+}
+
+model PartyMember {
+  partyId     String
+  characterId String
+  joinedAt    DateTime  @default(now()) @map("joined_at")
+  leftAt      DateTime? @map("left_at")
+
+  party       Party     @relation(fields: [partyId], references: [id], onDelete: Cascade)
+  character   Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@id([partyId, characterId])
+  @@map("party_members")
+}
+
+model Shop {
+  id      String   @id
+  name    String
+
+  items   ShopItem[]
+
+  @@map("shops")
+}
+
+model ShopItem {
+  id            Int      @id @default(autoincrement())
+  shopId        String   @map("shop_id")
+  templateId    String   @map("template_id")
+  price         Int
+  currency      String   @default("gold")
+  stock         Int      @default(-1)
+  refreshType   String?  @map("refresh_type")
+  validUntil    DateTime? @map("valid_until")
+
+  shop          Shop     @relation(fields: [shopId], references: [id])
+  template      ItemTemplate @relation(fields: [templateId], references: [id])
+
+  @@map("shop_items")
+}
+
+model CharacterTransaction {
+  id            Int      @id @default(autoincrement())
+  characterId   String   @map("character_id")
+  type          String
+  amount        Int
+  balanceAfter  Int      @map("balance_after")
+  relatedItemId String?  @map("related_item_id")
+  relatedRunId  String?  @map("related_run_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  character     Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@map("character_transactions")
+}
+
+model Mail {
+  id              Int      @id @default(autoincrement())
+  characterId     String   @map("character_id")
+  senderName      String   @default("系统") @map("sender_name")
+  title           String
+  content         String?
+  attachmentsJson String?  @map("attachments_json")
+  isRead          Boolean  @default(false) @map("is_read")
+  isClaimed       Boolean  @default(false) @map("is_claimed")
+  expiredAt       DateTime? @map("expired_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@map("mail")
+}
+
+model Announcement {
+  id        Int      @id @default(autoincrement())
+  type      String
+  content   String
+  startAt   DateTime? @map("start_at")
+  endAt     DateTime? @map("end_at")
+  isActive  Boolean  @default(true) @map("is_active")
+
+  @@map("announcements")
+}
+
+model LeaderboardSeason {
+  id        Int      @id @default(autoincrement())
+  name      String
+  startAt   DateTime? @map("start_at")
+  endAt     DateTime? @map("end_at")
+
+  entries   LeaderboardEntry[]
+
+  @@map("leaderboard_seasons")
+}
+
+model LeaderboardEntry {
+  seasonId    Int
+  category    String
+  characterId String
+  score       Int
+  rank        Int?
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  season      LeaderboardSeason @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+
+  @@id([seasonId, category, characterId])
+  @@map("leaderboard_entries")
+}
+
+model AuditLog {
+  id            Int      @id @default(autoincrement())
+  userId        String   @map("user_id")
+  characterId   String?  @map("character_id")
+  action        String
+  detailsJson   String?  @map("details_json")
+  clientIp      String?  @map("client_ip")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("audit_logs")
+}
+
+model AntiCheatFlag {
+  id            Int      @id @default(autoincrement())
+  characterId   String   @map("character_id")
+  type          String
+  confidence    Int?
+  evidenceJson  String?  @map("evidence_json")
+  reviewedBy    String?  @map("reviewed_by")
+  reviewedAt    DateTime? @map("reviewed_at")
+  actionTaken   String?  @map("action_taken")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("anti_cheat_flags")
+}

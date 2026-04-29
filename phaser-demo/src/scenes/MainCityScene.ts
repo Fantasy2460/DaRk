@@ -1,5 +1,7 @@
 import Phaser from 'phaser';
 import { GameState } from '../managers/GameState';
+import { SaveManager } from '../managers/SaveManager';
+import { api } from '../network/ApiClient';
 import { Player } from '../entities/Player';
 import { EquipmentSystem } from '../systems/EquipmentSystem';
 import { InventorySystem } from '../systems/InventorySystem';
@@ -351,9 +353,9 @@ export class MainCityScene extends Phaser.Scene {
     }
   }
 
-  private handleSpecialInput() {
+  private async handleSpecialInput() {
     if (Phaser.Input.Keyboard.JustDown(this.keys.B)) {
-      this.toggleBag();
+      await this.toggleBag();
     }
     if (Phaser.Input.Keyboard.JustDown(this.keys.K) || Phaser.Input.Keyboard.JustDown(this.keys.N)) {
       this.scene.start('SkillScene');
@@ -482,11 +484,11 @@ export class MainCityScene extends Phaser.Scene {
 
   // ========== 背包 ==========
 
-  private toggleBag() {
+  private async toggleBag() {
     if (this.bagOpen) {
       this.closeBag();
     } else {
-      this.openBag();
+      await this.openBag();
     }
   }
 
@@ -502,13 +504,9 @@ export class MainCityScene extends Phaser.Scene {
     this.bagUI = [];
   }
 
-  private openBag() {
+  private async openBag() {
     if (this.bagOpen) return;
     this.bagOpen = true;
-
-    const state = GameState.getInstance();
-    const eq = new EquipmentSystem(state.save.cityEquipment);
-    const inv = new InventorySystem(state.save.cityInventory);
 
     const cam = this.cameras.main;
     const cx = cam.width / 2;
@@ -533,6 +531,39 @@ export class MainCityScene extends Phaser.Scene {
     const closeHint = this.add.text(cx, cy + 195, '按 B 或 ESC 关闭', { fontSize: '12px', color: '#64748b' })
       .setOrigin(0.5).setScrollFactor(0).setDepth(4002);
     this.bagUI.push(closeHint);
+
+    // 加载指示器
+    const loadingText = this.add.text(cx, cy, '加载中...', {
+      fontSize: '16px', color: '#94a3b8',
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(4003);
+    this.bagUI.push(loadingText);
+
+    overlay.on('pointerdown', () => this.closeBag());
+
+    // 从后端查询背包与装备数据
+    let cityInventory = GameState.getInstance().save.cityInventory;
+    let cityEquipment = GameState.getInstance().save.cityEquipment;
+
+    const characterId = SaveManager.getCharacterId();
+    if (characterId && api.getToken()) {
+      try {
+        const data = await api.getCharacterInventory(characterId);
+        if (data?.cityInventory) cityInventory = data.cityInventory;
+        if (data?.cityEquipment) cityEquipment = data.cityEquipment;
+      } catch (e) {
+        console.warn('从服务器获取背包失败，使用本地数据:', e);
+      }
+    }
+
+    // 清理加载指示器
+    if (loadingText.active) {
+      loadingText.destroy();
+      this.bagUI = this.bagUI.filter((obj) => obj !== loadingText);
+    }
+    if (!this.bagOpen) return; // 加载过程中用户已关闭背包
+
+    const eq = new EquipmentSystem(cityEquipment);
+    const inv = new InventorySystem(cityInventory);
 
     const slots = ['weapon', 'helmet', 'armor', 'pants', 'shoes', 'accessory', 'offhand'] as const;
     const eqStartX = cx - 240;
@@ -618,8 +649,6 @@ export class MainCityScene extends Phaser.Scene {
         bg.on('pointerout', () => this.showInfo(''));
       }
     }
-
-    overlay.on('pointerdown', () => this.closeBag());
   }
 
   private showInfo(text: string) {

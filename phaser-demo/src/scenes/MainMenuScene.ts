@@ -1,5 +1,7 @@
 import Phaser from 'phaser';
 import { GameState } from '../managers/GameState';
+import { SaveManager } from '../managers/SaveManager';
+import { api } from '../network/ApiClient';
 import { CLASSES } from '../data/classes';
 import type { ClassType } from '../types';
 
@@ -77,8 +79,8 @@ export class MainMenuScene extends Phaser.Scene {
       .on('pointerout', () => startBtn.setStyle({ backgroundColor: '#1e40af' }))
       .on('pointerdown', () => this.startGame());
 
-    // 重置存档
-    this.add.text(cx, 600, '重置存档', {
+    // 底部操作栏：重置存档 + 退出登录
+    this.add.text(cx - 80, 600, '重置存档', {
       fontSize: '14px',
       color: '#ef4444',
     })
@@ -87,6 +89,20 @@ export class MainMenuScene extends Phaser.Scene {
       .on('pointerdown', () => {
         GameState.getInstance().resetAll();
         this.scene.restart();
+      });
+
+    this.add.text(cx + 80, 600, '退出登录', {
+      fontSize: '14px',
+      color: '#94a3b8',
+    })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true })
+      .on('pointerover', (self: Phaser.GameObjects.Text) => self.setColor('#e2e8f0'))
+      .on('pointerout', (self: Phaser.GameObjects.Text) => self.setColor('#94a3b8'))
+      .on('pointerdown', () => {
+        api.logout();
+        SaveManager.setCharacterId(null);
+        this.scene.start('LoginScene');
       });
   }
 

@@ -16,8 +16,24 @@
       "Bash(curl -s http://localhost:5173/src/scenes/GameScene.ts)",
       "Bash(npx tsc *)",
       "Bash(python3 -c ' *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(npx prisma *)",
+      "Bash(npx tsx *)",
+      "Bash(lsof -ti:3001)",
+      "Bash(lsof -ti:5173)",
       "Bash(npm run *)",
-      "Bash(git add *)"
+      "Bash(docker *)",
+      "Bash(brew services *)",
+      "Bash(/opt/homebrew/opt/postgresql@16/bin/createuser -s dark)",
+      "Bash(/opt/homebrew/opt/postgresql@16/bin/createdb -O dark dark_journey)",
+      "Bash(/opt/homebrew/opt/postgresql@16/bin/psql -U dark -d dark_journey -c \"ALTER USER dark WITH PASSWORD 'journey123';\")",
+      "Bash(psql postgres *)",
+      "Bash(./node_modules/.bin/prisma migrate *)",
+      "Bash(xargs kill *)",
+      "Bash(psql *)",
+      "Bash(kill -9 10008 16601 16076 16936)"
     ]
   }
 }

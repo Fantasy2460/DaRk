@@ -1,5 +1,7 @@
 import Phaser from 'phaser';
 import { GameState } from '../managers/GameState';
+import { SaveManager } from '../managers/SaveManager';
+import { api } from '../network/ApiClient';
 import { Player } from '../entities/Player';
 import { Enemy } from '../entities/Enemy';
 import { FogSystem } from '../systems/FogSystem';
@@ -1107,9 +1109,9 @@ export class ForestScene extends Phaser.Scene {
     });
   }
 
-  private handleBagInput() {
+  private async handleBagInput() {
     if (Phaser.Input.Keyboard.JustDown(this.keys.B)) {
-      this.toggleBag();
+      await this.toggleBag();
     }
   }
 
@@ -1125,11 +1127,11 @@ export class ForestScene extends Phaser.Scene {
     }
   }
 
-  private toggleBag() {
+  private async toggleBag() {
     if (this.bagOpen) {
       this.closeBag();
     } else {
-      this.openBag();
+      await this.openBag();
     }
   }
 
@@ -1141,7 +1143,7 @@ export class ForestScene extends Phaser.Scene {
     this.bagUI = [];
   }
 
-  private openBag() {
+  private async openBag() {
     this.bagOpen = true;
     const cam = this.cameras.main;
     const cx = cam.width / 2;
@@ -1167,6 +1169,12 @@ export class ForestScene extends Phaser.Scene {
       .setOrigin(0.5).setScrollFactor(0).setDepth(4002);
     this.bagUI.push(closeHint);
 
+    // 加载指示器
+    const loadingText = this.add.text(cx, cy, '加载中...', {
+      fontSize: '16px', color: '#94a3b8',
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(4003);
+    this.bagUI.push(loadingText);
+
     // 点击遮罩关闭
     overlay.on('pointerdown', () => this.closeBag());
 
@@ -1178,6 +1186,29 @@ export class ForestScene extends Phaser.Scene {
       lineSpacing: 4,
     }).setOrigin(0.5).setScrollFactor(0).setDepth(4004);
     this.bagUI.push(this.bagInfoText);
+
+    // 向后端查询最新背包数据并同步到本地存档
+    const characterId = SaveManager.getCharacterId();
+    if (characterId && api.getToken()) {
+      try {
+        const data = await api.getCharacterInventory(characterId);
+        if (data?.cityInventory) {
+          GameState.getInstance().save.cityInventory = data.cityInventory;
+        }
+        if (data?.cityEquipment) {
+          GameState.getInstance().save.cityEquipment = data.cityEquipment;
+        }
+      } catch (e) {
+        console.warn('局内背包同步服务器数据失败:', e);
+      }
+    }
+
+    // 清理加载指示器
+    if (loadingText.active) {
+      loadingText.destroy();
+      this.bagUI = this.bagUI.filter((obj) => obj !== loadingText);
+    }
+    if (!this.bagOpen) return;
 
     this.renderBagContents(cx, cy);
   }
