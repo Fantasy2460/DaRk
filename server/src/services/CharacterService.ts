@@ -1,4 +1,5 @@
 import { prisma } from '../config/database';
+import { generateId } from '../utils/id';
 import { ItemRarity, ItemSlot, ClassType } from '../types/game';
 
 export interface GameSavePayload {
@@ -19,8 +20,24 @@ export async function createCharacter(
   name: string,
   classType: ClassType
 ) {
+  const startingWeaponId =
+    classType === 'warrior' ? 'rusty_sword' :
+    classType === 'mage' ? 'cracked_wand' :
+    'wooden_staff';
+
+  const startingItems = [
+    { templateId: startingWeaponId, equippedSlot: 'weapon' as const },
+    { templateId: 'cloth_helm', equippedSlot: 'helmet' as const },
+    { templateId: 'leather_armor', equippedSlot: 'armor' as const },
+    { templateId: 'cloth_pants', equippedSlot: 'pants' as const },
+    { templateId: 'old_boots', equippedSlot: 'shoes' as const },
+    { templateId: 'wooden_shield', equippedSlot: 'offhand' as const },
+    { templateId: 'copper_ring', equippedSlot: 'accessory' as const },
+  ];
+
   const char = await prisma.character.create({
     data: {
+      id: generateId(),
       userId,
       name,
       classType,
@@ -33,8 +50,17 @@ export async function createCharacter(
       skills: {
         create: getDefaultSkillsForClass(classType),
       },
+      items: {
+        create: startingItems.map((it) => ({
+          id: generateId(),
+          templateId: it.templateId,
+          location: 'equipped',
+          equippedSlot: it.equippedSlot,
+          stackCount: 1,
+        })),
+      },
     },
-    include: { stats: true, skills: true },
+    include: { stats: true, skills: true, items: { include: { template: true } } },
   });
   return char;
 }
@@ -169,6 +195,7 @@ export async function saveCharacterData(characterId: string, payload: GameSavePa
   payload.cityInventory.forEach((slot, index) => {
     if (slot.item) {
       itemsToCreate.push({
+        id: generateId(),
         characterId,
         templateId: slot.item.id,
         rarity: slot.item.rarity,
@@ -184,6 +211,7 @@ export async function saveCharacterData(characterId: string, payload: GameSavePa
   for (const [slot, item] of Object.entries(payload.cityEquipment)) {
     if (item) {
       itemsToCreate.push({
+        id: generateId(),
         characterId,
         templateId: item.id,
         rarity: item.rarity,
@@ -261,18 +289,188 @@ export async function getCharacterInventory(characterId: string) {
 }
 
 function getDefaultSkillsForClass(classType: ClassType) {
-  // 根据职业返回默认解锁的技能
   const skills: { skillId: string; level: number; unlockedAt?: Date }[] = [];
   if (classType === 'warrior') {
-    skills.push({ skillId: 'heavy_slash', level: 1, unlockedAt: new Date() });
+    skills.push({ skillId: 'slash', level: 1, unlockedAt: new Date() });
     skills.push({ skillId: 'whirlwind', level: 1, unlockedAt: new Date() });
   } else if (classType === 'mage') {
     skills.push({ skillId: 'fireball', level: 1, unlockedAt: new Date() });
-    skills.push({ skillId: 'starfall', level: 1, unlockedAt: new Date() });
-    skills.push({ skillId: 'mana_flow', level: 1, unlockedAt: new Date() });
+    skills.push({ skillId: 'meteor', level: 1, unlockedAt: new Date() });
+    skills.push({ skillId: 'manaOverflow', level: 1, unlockedAt: new Date() });
   } else if (classType === 'sage') {
-    skills.push({ skillId: 'heal_light', level: 1, unlockedAt: new Date() });
-    skills.push({ skillId: 'weakness_curse', level: 1, unlockedAt: new Date() });
+    skills.push({ skillId: 'heal', level: 1, unlockedAt: new Date() });
+    skills.push({ skillId: 'curse', level: 1, unlockedAt: new Date() });
   }
   return skills;
+}
+
+export interface CharacterStatsResult {
+  baseStats: {
+    maxHp: number;
+    maxMp: number;
+    attack: number;
+    defense: number;
+    speed: number;
+    fogResist: number;
+  };
+  equipmentBonus: {
+    maxHp: number;
+    maxMp: number;
+    attack: number;
+    defense: number;
+    speed: number;
+  };
+  finalStats: {
+    maxHp: number;
+    maxMp: number;
+    attack: number;
+    defense: number;
+    speed: number;
+  };
+}
+
+function computeStats(
+  baseHp: number,
+  baseMp: number,
+  baseAttack: number,
+  baseDefense: number,
+  baseSpeed: number,
+  fogResist: number,
+  level: number,
+  equipmentItems: { statsJson: string | null }[]
+): CharacterStatsResult {
+  const levelMultiplier = 1 + (level - 1) * 0.05;
+
+  const bonus = { maxHp: 0, maxMp: 0, attack: 0, defense: 0, speed: 0 };
+  for (const item of equipmentItems) {
+    if (!item.statsJson) continue;
+    try {
+      const stats = JSON.parse(item.statsJson) as Record<string, number>;
+      if (stats.hp) bonus.maxHp += stats.hp;
+      if (stats.maxHp) bonus.maxHp += stats.maxHp;
+      if (stats.mp) bonus.maxMp += stats.mp;
+      if (stats.maxMp) bonus.maxMp += stats.maxMp;
+      if (stats.attack) bonus.attack += stats.attack;
+      if (stats.defense) bonus.defense += stats.defense;
+      if (stats.speed) bonus.speed += stats.speed;
+    } catch {
+      // ignore invalid json
+    }
+  }
+
+  const base = {
+    maxHp: Math.floor(baseHp * levelMultiplier),
+    maxMp: Math.floor(baseMp * levelMultiplier),
+    attack: Math.floor(baseAttack * levelMultiplier),
+    defense: Math.floor(baseDefense * levelMultiplier),
+    speed: Math.floor(baseSpeed * levelMultiplier),
+    fogResist,
+  };
+
+  return {
+    baseStats: base,
+    equipmentBonus: bonus,
+    finalStats: {
+      maxHp: base.maxHp + bonus.maxHp,
+      maxMp: base.maxMp + bonus.maxMp,
+      attack: base.attack + bonus.attack,
+      defense: base.defense + bonus.defense,
+      speed: base.speed + bonus.speed,
+    },
+  };
+}
+
+export async function getCharacterStats(characterId: string): Promise<CharacterStatsResult> {
+  const char = await prisma.character.findUnique({
+    where: { id: characterId },
+    include: {
+      stats: true,
+      items: {
+        where: { location: 'equipped' },
+        select: { statsJson: true },
+      },
+    },
+  });
+  if (!char || !char.stats) throw new Error('角色不存在');
+
+  const s = char.stats;
+  return computeStats(
+    s.baseHp, s.baseMp, s.baseAttack, s.baseDefense, s.baseSpeed, s.fogResist,
+    char.level,
+    char.items
+  );
+}
+
+export async function calculateCharacterStats(
+  characterId: string,
+  overrideEquipment?: Record<string, any | null>
+): Promise<CharacterStatsResult> {
+  const char = await prisma.character.findUnique({
+    where: { id: characterId },
+    include: { stats: true },
+  });
+  if (!char || !char.stats) throw new Error('角色不存在');
+
+  let items: { statsJson: string | null }[] = [];
+  if (overrideEquipment) {
+    for (const [, item] of Object.entries(overrideEquipment)) {
+      if (item && item.stats) {
+        items.push({ statsJson: JSON.stringify(item.stats) });
+      }
+    }
+  } else {
+    items = await prisma.playerItem.findMany({
+      where: { characterId, location: 'equipped' },
+      select: { statsJson: true },
+    });
+  }
+
+  const s = char.stats;
+  return computeStats(
+    s.baseHp, s.baseMp, s.baseAttack, s.baseDefense, s.baseSpeed, s.fogResist,
+    char.level,
+    items
+  );
+}
+
+export async function getCharacterSkills(characterId: string, playerLevel: number) {
+  const char = await prisma.character.findUnique({
+    where: { id: characterId },
+    select: { classType: true },
+  });
+  if (!char) throw new Error('角色不存在');
+
+  // 获取该职业所有技能模板
+  const templates = await prisma.skillTemplate.findMany({
+    where: { classType: char.classType },
+    orderBy: { requiredLevel: 'asc' },
+  });
+
+  // 获取角色已解锁的技能
+  const unlocked = await prisma.characterSkill.findMany({
+    where: { characterId },
+  });
+  const unlockedMap = new Map(unlocked.map((s) => [s.skillId, s]));
+
+  return templates.map((t) => {
+    const u = unlockedMap.get(t.id);
+    return {
+      skillId: t.id,
+      name: t.name,
+      description: t.description,
+      classType: t.classType,
+      type: t.type,
+      requiredLevel: t.requiredLevel,
+      cooldown: t.cooldown,
+      mpCost: t.mpCost,
+      damage: t.damage,
+      damagePercent: t.damagePercent,
+      range: t.range,
+      aoe: t.aoe,
+      maxLevel: t.maxLevel,
+      unlocked: !!u && playerLevel >= t.requiredLevel,
+      currentLevel: u?.level ?? 1,
+      unlockedAt: u?.unlockedAt?.toISOString() ?? null,
+    };
+  });
 }

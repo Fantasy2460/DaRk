@@ -10,10 +10,10 @@ export const CLASSES: PlayerClass[] = [
       maxHp: 150,
       mp: 50,
       maxMp: 50,
-      attack: 18,
-      defense: 12,
+      attack: 15,
+      defense: 10,
       speed: 160,
-      fogResist: 0,
+      fogResist: 5,
     },
     skills: [
       {
@@ -47,14 +47,14 @@ export const CLASSES: PlayerClass[] = [
     name: '法师',
     description: '远程范围输出，高爆发低生命',
     baseStats: {
-      hp: 80,
-      maxHp: 80,
-      mp: 150,
-      maxMp: 150,
-      attack: 28,
+      hp: 100,
+      maxHp: 100,
+      mp: 100,
+      maxMp: 100,
+      attack: 20,
       defense: 5,
       speed: 150,
-      fogResist: 0,
+      fogResist: 8,
     },
     skills: [
       {
@@ -99,14 +99,14 @@ export const CLASSES: PlayerClass[] = [
     name: '贤者',
     description: '增益、治疗与减益',
     baseStats: {
-      hp: 100,
-      maxHp: 100,
-      mp: 120,
-      maxMp: 120,
+      hp: 120,
+      maxHp: 120,
+      mp: 80,
+      maxMp: 80,
       attack: 12,
       defense: 8,
       speed: 155,
-      fogResist: 5,
+      fogResist: 10,
     },
     skills: [
       {

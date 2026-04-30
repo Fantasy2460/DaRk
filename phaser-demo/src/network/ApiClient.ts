@@ -80,6 +80,77 @@ class ApiClient {
     return this.request('POST', `/characters/${characterId}/save`, payload);
   }
 
+  async getCharacterSkills(characterId: string, level: number) {
+    return this.request('GET', `/characters/${characterId}/skills?level=${level}`);
+  }
+
+  async getCharacterStats(characterId: string) {
+    return this.request('GET', `/characters/${characterId}/stats`);
+  }
+
+  async calculateCharacterStats(characterId: string, equipment?: Record<string, any | null>) {
+    return this.request('POST', `/characters/${characterId}/calculate-stats`, { equipment });
+  }
+
+  // 怪物与图鉴
+  async getEnemies() {
+    return this.request('GET', '/enemies');
+  }
+
+  async getCharacterBestiary(characterId: string) {
+    return this.request('GET', `/enemies/bestiary/${characterId}`);
+  }
+
+  // 物品
+  async getItems() {
+    return this.request('GET', '/items');
+  }
+
+  // 商店
+  async getShops() {
+    return this.request('GET', '/shops');
+  }
+
+  async getShopItems(shopId: string) {
+    return this.request('GET', `/shops/${shopId}/items`);
+  }
+
+  async buyShopItem(characterId: string, shopItemId: number) {
+    return this.request('POST', '/shops/buy', { characterId, shopItemId });
+  }
+
+  // 审计日志
+  async logAudit(action: string, characterId?: string, details?: Record<string, any>) {
+    return this.request('POST', '/audit', { action, characterId, details });
+  }
+
+  async getAuditLogs(characterId: string, limit?: number) {
+    return this.request('GET', `/audit/character/${characterId}?limit=${limit ?? 100}`);
+  }
+
+  // 金币交易记录
+  async logTransaction(
+    characterId: string,
+    type: string,
+    amount: number,
+    balanceAfter: number,
+    relatedItemId?: string,
+    relatedRunId?: string
+  ) {
+    return this.request('POST', '/transactions', {
+      characterId,
+      type,
+      amount,
+      balanceAfter,
+      relatedItemId,
+      relatedRunId,
+    });
+  }
+
+  async getTransactions(characterId: string, limit?: number) {
+    return this.request('GET', `/transactions/character/${characterId}?limit=${limit ?? 100}`);
+  }
+
   // 健康检查
   async health() {
     return this.request('GET', '/health');

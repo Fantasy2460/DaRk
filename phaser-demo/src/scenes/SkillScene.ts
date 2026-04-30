@@ -1,5 +1,7 @@
 import Phaser from 'phaser';
 import { GameState } from '../managers/GameState';
+import { SaveManager } from '../managers/SaveManager';
+import { api } from '../network/ApiClient';
 import { CLASSES } from '../data/classes';
 import { getExpToNextLevel, MAX_PLAYER_LEVEL } from '../config/gameConfig';
 import type { Skill, SkillType } from '../types';
@@ -21,8 +23,11 @@ const TYPE_COLORS: Record<SkillType, { bg: number; text: string }> = {
 
 export class SkillScene extends Phaser.Scene {
   private selectedTab = 0;
-  private uiObjects: Phaser.GameObjects.GameObject[] = [];
+  private contentObjects: Phaser.GameObjects.GameObject[] = [];
   private infoText!: Phaser.GameObjects.Text;
+  private skills: Skill[] = [];
+  private skillUnlockMap = new Map<string, boolean>();
+  private loadingText!: Phaser.GameObjects.Text;
 
   constructor() {
     super({ key: 'SkillScene' });
@@ -41,16 +46,16 @@ export class SkillScene extends Phaser.Scene {
       fontStyle: 'bold',
     }).setOrigin(0.5);
 
-    // 等级与经验
+    // 等级与经验（静态，不加入 contentObjects）
     this.renderLevelInfo(level, state.save.exp);
 
-    // 页签
-    this.renderTabs(level);
+    // 加载提示
+    this.loadingText = this.add.text(this.scale.width / 2, 200, '加载技能数据...', {
+      fontSize: '16px',
+      color: '#94a3b8',
+    }).setOrigin(0.5);
 
-    // 技能卡片
-    this.renderSkills(level);
-
-    // 返回按钮：局内回森林，局外回主城
+    // 返回按钮
     const returnScene = GameState.getInstance().run ? 'ForestScene' : 'MainCityScene';
     const backLabel = returnScene === 'ForestScene' ? '返回游戏' : '返回主城';
     const backBtn = this.add.text(this.scale.width / 2, this.scale.height - 30, backLabel, {
@@ -65,12 +70,55 @@ export class SkillScene extends Phaser.Scene {
       .on('pointerout', () => backBtn.setStyle({ backgroundColor: '#475569' }))
       .on('pointerdown', () => this.scene.start(returnScene));
 
-    this.uiObjects.push(backBtn);
-
-    // ESC 返回：局内回森林，局外回主城
+    // ESC / N 返回
     this.input.keyboard!.on('keydown-ESC', () => {
       this.scene.start(returnScene);
     });
+    this.input.keyboard!.on('keydown-N', () => {
+      this.scene.start(returnScene);
+    });
+
+    // 异步加载技能数据
+    this.loadSkills(level);
+  }
+
+  private async loadSkills(playerLevel: number) {
+    const characterId = SaveManager.getCharacterId();
+    if (characterId && api.getToken()) {
+      try {
+        const { skills } = await api.getCharacterSkills(characterId, playerLevel);
+        this.skills = skills.map((s: any) => ({
+          id: s.skillId,
+          name: s.name,
+          description: s.description,
+          type: s.type as SkillType,
+          requiredLevel: s.requiredLevel,
+          cooldown: s.cooldown,
+          mpCost: s.mpCost,
+          damage: s.damage ?? undefined,
+          damagePercent: s.damagePercent ?? undefined,
+          range: s.range ?? undefined,
+          aoe: s.aoe,
+          maxLevel: s.maxLevel ?? undefined,
+        }));
+        this.skillUnlockMap = new Map(skills.map((s: any) => [s.skillId, s.unlocked]));
+        this.loadingText.destroy();
+        this.renderTabs(playerLevel);
+        this.renderSkills(playerLevel);
+        return;
+      } catch (e) {
+        console.warn('从服务器加载技能失败，回退本地:', e);
+      }
+    }
+
+    // 回退到本地 CLASSES 数据（游客模式或离线）
+    const state = GameState.getInstance();
+    const cls = CLASSES.find((c) => c.id === state.save.selectedClass);
+    this.skills = cls?.skills ?? [];
+    this.skillUnlockMap = new Map(this.skills.map((s) => [s.id, playerLevel >= (s.requiredLevel ?? 1)]));
+    this.loadingText.destroy();
+    this.renderTabs(playerLevel);
+    this.renderSkills(playerLevel);
   }
 
   private renderLevelInfo(level: number, exp: number) {
@@ -81,29 +129,20 @@ export class SkillScene extends Phaser.Scene {
     const required = isMax ? 1 : getExpToNextLevel(level);
     const ratio = isMax ? 1 : Math.min(1, exp / required);
 
-    // Lv. 文字
-    const lvText = this.add.text(cx - 110, y, `Lv.${level}`, {
+    this.add.text(cx - 110, y, `Lv.${level}`, {
       fontSize: '14px',
       color: '#fbbf24',
       fontStyle: 'bold',
     }).setOrigin(0, 0.5);
-    this.uiObjects.push(lvText);
 
-    // 经验条背景
-    const barBg = this.add.rectangle(cx + 10, y, 180, 10, 0x1e293b).setOrigin(0, 0.5);
-    this.uiObjects.push(barBg);
+    this.add.rectangle(cx + 10, y, 180, 10, 0x1e293b).setOrigin(0, 0.5);
+    this.add.rectangle(cx + 10, y, 180 * ratio, 10, 0xfbbf24).setOrigin(0, 0.5);
 
-    // 经验条前景
-    const barFill = this.add.rectangle(cx + 10, y, 180 * ratio, 10, 0xfbbf24).setOrigin(0, 0.5);
-    this.uiObjects.push(barFill);
-
-    // 经验数值
     const expLabel = isMax ? '已满级' : `${exp} / ${required}`;
-    const expText = this.add.text(cx + 200, y, expLabel, {
+    this.add.text(cx + 200, y, expLabel, {
       fontSize: '11px',
       color: '#94a3b8',
     }).setOrigin(0, 0.5);
-    this.uiObjects.push(expText);
   }
 
   private renderTabs(playerLevel: number) {
@@ -121,13 +160,13 @@ export class SkillScene extends Phaser.Scene {
 
       const bg = this.add.rectangle(x, y, 80, 32, bgColor);
       bg.setStrokeStyle(2, strokeColor);
-      this.uiObjects.push(bg);
+      this.contentObjects.push(bg);
 
       const label = this.add.text(x, y, `Lv.${lvl}`, {
         fontSize: '13px',
         color: unlocked ? (selected ? '#fbbf24' : '#e2e8f0') : '#475569',
       }).setOrigin(0.5);
-      this.uiObjects.push(label);
+      this.contentObjects.push(label);
 
       if (unlocked) {
         bg.setInteractive({ useHandCursor: true });
@@ -142,12 +181,8 @@ export class SkillScene extends Phaser.Scene {
   }
 
   private renderSkills(playerLevel: number) {
-    const state = GameState.getInstance();
-    const cls = CLASSES.find((c) => c.id === state.save.selectedClass);
-    if (!cls) return;
-
     const tabLevel = TAB_LEVELS[this.selectedTab];
-    const skills = cls.skills.filter((s) => (s.requiredLevel ?? 1) === tabLevel);
+    const skills = this.skills.filter((s) => (s.requiredLevel ?? 1) === tabLevel);
 
     const cx = this.scale.width / 2;
     const startY = 160;
@@ -160,7 +195,7 @@ export class SkillScene extends Phaser.Scene {
         fontSize: '16px',
         color: '#475569',
       }).setOrigin(0.5);
-      this.uiObjects.push(hint);
+      this.contentObjects.push(hint);
       return;
     }
 
@@ -170,7 +205,7 @@ export class SkillScene extends Phaser.Scene {
     skills.forEach((skill, i) => {
       const x = startX + i * (cardWidth + gap);
       const y = startY + cardHeight / 2;
-      const unlocked = playerLevel >= (skill.requiredLevel ?? 1);
+      const unlocked = this.skillUnlockMap.get(skill.id) ?? false;
 
       this.createSkillCard(x, y, cardWidth, cardHeight, skill, unlocked);
     });
@@ -191,7 +226,7 @@ export class SkillScene extends Phaser.Scene {
     const bg = this.add.rectangle(x, y, w, h, bgColor);
     bg.setStrokeStyle(2, strokeColor);
     bg.setAlpha(alpha);
-    this.uiObjects.push(bg);
+    this.contentObjects.push(bg);
 
     // 名称
     const nameText = this.add.text(x - w / 2 + 14, y - h / 2 + 14, skill.name, {
@@ -199,7 +234,7 @@ export class SkillScene extends Phaser.Scene {
       color: unlocked ? '#e2e8f0' : '#64748b',
       fontStyle: 'bold',
     }).setOrigin(0);
-    this.uiObjects.push(nameText);
+    this.contentObjects.push(nameText);
 
     // 类型标签
     const typeLabel = skill.type === 'passive' ? '被动' : '主动';
@@ -208,16 +243,16 @@ export class SkillScene extends Phaser.Scene {
       fontSize: '11px',
       color: typeColor,
     }).setOrigin(1, 0);
-    this.uiObjects.push(typeText);
+    this.contentObjects.push(typeText);
 
-    // 描述（启用 advanced wrap 以支持中文在任意字符处换行）
+    // 描述
     const descText = this.add.text(x - w / 2 + 14, y - h / 2 + 42, skill.description, {
       fontSize: '12px',
       color: unlocked ? '#94a3b8' : '#475569',
       wordWrap: { width: w - 32, useAdvancedWrap: true },
       lineSpacing: 2,
     }).setOrigin(0);
-    this.uiObjects.push(descText);
+    this.contentObjects.push(descText);
 
     // 数值详情行
     const details: string[] = [];
@@ -234,27 +269,27 @@ export class SkillScene extends Phaser.Scene {
       details.join('  |  '),
       { fontSize: '11px', color: '#64748b', wordWrap: { width: w - 32, useAdvancedWrap: true } }
     ).setOrigin(0);
-    this.uiObjects.push(detailText);
+    this.contentObjects.push(detailText);
 
     // 解锁状态标签
     const statusText = this.add.text(x + w / 2 - 14, y + h / 2 - 28, unlocked ? '已解锁' : '未解锁', {
       fontSize: '11px',
       color: unlocked ? '#22c55e' : '#ef4444',
     }).setOrigin(1, 0);
-    this.uiObjects.push(statusText);
+    this.contentObjects.push(statusText);
 
     // 等级要求
     const reqText = this.add.text(x, y + h / 2 - 10, `需要 Lv.${skill.requiredLevel ?? 1}`, {
       fontSize: '10px',
       color: '#64748b',
     }).setOrigin(0.5, 1);
-    this.uiObjects.push(reqText);
+    this.contentObjects.push(reqText);
   }
 
   private clearContentUI() {
-    for (const obj of this.uiObjects) {
+    for (const obj of this.contentObjects) {
       if (obj.active) obj.destroy();
     }
-    this.uiObjects = [];
+    this.contentObjects = [];
   }
 }

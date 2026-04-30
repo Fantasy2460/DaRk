@@ -1,5 +1,7 @@
 import Phaser from 'phaser';
 import { GameState } from '../managers/GameState';
+import { SaveManager } from '../managers/SaveManager';
+import { api } from '../network/ApiClient';
 import { CLASSES } from '../data/classes';
 import { EquipmentSystem } from '../systems/EquipmentSystem';
 import { getExpToNextLevel, MAX_PLAYER_LEVEL, RARITY_COLORS, SLOT_NAMES } from '../config/gameConfig';
@@ -14,33 +16,10 @@ export class CharacterScene extends Phaser.Scene {
     super({ key: 'CharacterScene' });
   }
 
+  private loadingText!: Phaser.GameObjects.Text;
+
   create() {
     this.add.rectangle(0, 0, this.scale.width, this.scale.height, 0x0f172a).setOrigin(0);
-
-    const state = GameState.getInstance();
-    const cls = CLASSES.find((c) => c.id === state.save.selectedClass);
-    if (!cls) return;
-
-    const level = state.save.level;
-    const isInRun = state.run !== null;
-    const eq = new EquipmentSystem(state.run !== null ? state.run.runEquipment : state.save.cityEquipment);
-    const eqBonus = eq.getTotalStats();
-    const multiplier = 1 + (level - 1) * 0.05;
-
-    const baseHp = Math.floor(cls.baseStats.maxHp * multiplier);
-    const baseMp = Math.floor(cls.baseStats.maxMp * multiplier);
-    const baseAtk = Math.floor(cls.baseStats.attack * multiplier);
-    const baseDef = Math.floor(cls.baseStats.defense * multiplier);
-    const baseSpd = Math.floor(cls.baseStats.speed * multiplier);
-
-    const finalMaxHp = baseHp + (eqBonus.maxHp ?? 0);
-    const finalMaxMp = baseMp + (eqBonus.maxMp ?? 0);
-    const finalAtk = baseAtk + (eqBonus.attack ?? 0);
-    const finalDef = baseDef + (eqBonus.defense ?? 0);
-    const finalSpd = baseSpd + (eqBonus.speed ?? 0);
-
-    const currentHp = isInRun ? state.run!.currentHp : finalMaxHp;
-    const currentMp = isInRun ? state.run!.currentMp : finalMaxMp;
 
     // 标题
     this.add.text(this.scale.width / 2, 28, '角色属性', {
@@ -49,16 +28,60 @@ export class CharacterScene extends Phaser.Scene {
       fontStyle: 'bold',
     }).setOrigin(0.5);
 
+    this.loadingText = this.add.text(this.scale.width / 2, 200, '加载属性数据...', {
+      fontSize: '16px',
+      color: '#94a3b8',
+    }).setOrigin(0.5);
+
+    this.loadStatsAndRender();
+  }
+
+  private async loadStatsAndRender() {
+    const state = GameState.getInstance();
+    const cls = CLASSES.find((c) => c.id === state.save.selectedClass);
+    if (!cls) {
+      this.loadingText.setText('职业数据异常');
+      return;
+    }
+
+    const level = state.save.level;
+    const isInRun = state.run !== null;
+    const eq = new EquipmentSystem(state.run !== null ? state.run.runEquipment : state.save.cityEquipment);
+
+    let stats: {
+      baseStats: { maxHp: number; maxMp: number; attack: number; defense: number; speed: number };
+      equipmentBonus: { maxHp: number; maxMp: number; attack: number; defense: number; speed: number };
+      finalStats: { maxHp: number; maxMp: number; attack: number; defense: number; speed: number };
+    };
+
+    const characterId = SaveManager.getCharacterId();
+    if (characterId && api.getToken()) {
+      try {
+        const res = await api.getCharacterStats(characterId);
+        stats = res.stats;
+      } catch (e) {
+        console.warn('从服务器加载属性失败，回退本地计算:', e);
+        stats = this.calculateStatsLocally(cls, level, eq);
+      }
+    } else {
+      stats = this.calculateStatsLocally(cls, level, eq);
+    }
+
+    this.loadingText.destroy();
+
+    const currentHp = isInRun ? state.run!.currentHp : stats.finalStats.maxHp;
+    const currentMp = isInRun ? state.run!.currentMp : stats.finalStats.maxMp;
+
     // 左侧面板：职业与等级
     this.renderProfile(130, 100, cls.name, level, state.save.exp);
 
     // 右侧面板：属性数值
     this.renderStats(380, 100, {
-      hp: { current: currentHp, max: finalMaxHp, base: baseHp, bonus: eqBonus.maxHp ?? 0 },
-      mp: { current: currentMp, max: finalMaxMp, base: baseMp, bonus: eqBonus.maxMp ?? 0 },
-      attack: { final: finalAtk, base: baseAtk, bonus: eqBonus.attack ?? 0 },
-      defense: { final: finalDef, base: baseDef, bonus: eqBonus.defense ?? 0 },
-      speed: { final: finalSpd, base: baseSpd, bonus: eqBonus.speed ?? 0 },
+      hp: { current: currentHp, max: stats.finalStats.maxHp, base: stats.baseStats.maxHp, bonus: stats.equipmentBonus.maxHp },
+      mp: { current: currentMp, max: stats.finalStats.maxMp, base: stats.baseStats.maxMp, bonus: stats.equipmentBonus.maxMp },
+      attack: { final: stats.finalStats.attack, base: stats.baseStats.attack, bonus: stats.equipmentBonus.attack },
+      defense: { final: stats.finalStats.defense, base: stats.baseStats.defense, bonus: stats.equipmentBonus.defense },
+      speed: { final: stats.finalStats.speed, base: stats.baseStats.speed, bonus: stats.equipmentBonus.speed },
     });
 
     // 下方：装备栏
@@ -84,6 +107,38 @@ export class CharacterScene extends Phaser.Scene {
     this.input.keyboard!.on('keydown-ESC', () => {
       this.scene.start(returnScene);
     });
+    this.input.keyboard!.on('keydown-C', () => {
+      this.scene.start(returnScene);
+    });
+  }
+
+  private calculateStatsLocally(cls: typeof CLASSES[0], level: number, eq: EquipmentSystem) {
+    const eqBonus = eq.getTotalStats();
+    const multiplier = 1 + (level - 1) * 0.05;
+    const base = {
+      maxHp: Math.floor(cls.baseStats.maxHp * multiplier),
+      maxMp: Math.floor(cls.baseStats.maxMp * multiplier),
+      attack: Math.floor(cls.baseStats.attack * multiplier),
+      defense: Math.floor(cls.baseStats.defense * multiplier),
+      speed: Math.floor(cls.baseStats.speed * multiplier),
+    };
+    return {
+      baseStats: base,
+      equipmentBonus: {
+        maxHp: eqBonus.maxHp ?? 0,
+        maxMp: eqBonus.maxMp ?? 0,
+        attack: eqBonus.attack ?? 0,
+        defense: eqBonus.defense ?? 0,
+        speed: eqBonus.speed ?? 0,
+      },
+      finalStats: {
+        maxHp: base.maxHp + (eqBonus.maxHp ?? 0),
+        maxMp: base.maxMp + (eqBonus.maxMp ?? 0),
+        attack: base.attack + (eqBonus.attack ?? 0),
+        defense: base.defense + (eqBonus.defense ?? 0),
+        speed: base.speed + (eqBonus.speed ?? 0),
+      },
+    };
   }
 
   private renderProfile(x: number, y: number, className: string, level: number, exp: number) {

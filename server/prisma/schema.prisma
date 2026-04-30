@@ -10,7 +10,7 @@ datasource db {
 // 如需切 PostgreSQL，把上方 provider 改为 "postgresql" 即可
 
 model User {
-  id            String   @id @default(uuid())
+  id            String   @id
   username      String   @unique
   email         String   @unique
   passwordHash  String   @map("password_hash")
@@ -26,7 +26,7 @@ model User {
 }
 
 model Character {
-  id                  String   @id @default(uuid())
+  id                  String   @id
   userId              String   @map("user_id")
   name                String
   classType           String   @map("class_type") // warrior / mage / sage
@@ -71,6 +71,26 @@ model CharacterStats {
   @@map("character_stats")
 }
 
+model SkillTemplate {
+  id            String   @id
+  name          String
+  description   String
+  classType     String   @map("class_type") // warrior / mage / sage
+  type          String   @default("active") // active / passive
+  requiredLevel Int      @default(1) @map("required_level")
+  cooldown      Int      @default(0)
+  mpCost        Int      @default(0) @map("mp_cost")
+  damage        Int?
+  damagePercent Int?     @map("damage_percent")
+  range         Int?
+  aoe           Boolean  @default(false)
+  maxLevel      Int?     @map("max_level")
+
+  characterSkills CharacterSkill[]
+
+  @@map("skill_templates")
+}
+
 model CharacterSkill {
   characterId   String
   skillId       String
@@ -78,6 +98,7 @@ model CharacterSkill {
   unlockedAt    DateTime? @map("unlocked_at")
 
   character     Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  skill         SkillTemplate @relation(fields: [skillId], references: [id], onDelete: Cascade)
 
   @@id([characterId, skillId])
   @@map("character_skills")
@@ -120,7 +141,7 @@ model ItemTemplate {
 }
 
 model PlayerItem {
-  id            String   @id @default(uuid())
+  id            String   @id
   characterId   String   @map("character_id")
   templateId    String   @map("template_id")
   rarity        String?
@@ -150,6 +171,25 @@ model ItemEnchantment {
   @@map("item_enchantments")
 }
 
+model EnemyTemplate {
+  id            String   @id
+  name          String
+  hp            Int
+  attack        Int
+  defense       Int
+  speed         Int
+  aggroRange    Int      @map("aggro_range")
+  attackRange   Int      @map("attack_range")
+  colorHex      String   @map("color_hex")
+  isBoss        Boolean  @default(false) @map("is_boss")
+  dropTableJson String?  @map("drop_table_json")
+  expValue      Int      @map("exp_value")
+
+  bestiaryEntries PlayerBestiary[]
+
+  @@map("enemy_templates")
+}
+
 model PlayerBestiary {
   characterId   String
   enemyTemplateId String @map("enemy_template_id")
@@ -157,7 +197,8 @@ model PlayerBestiary {
   firstKillAt   DateTime? @map("first_kill_at")
   lastKillAt    DateTime? @map("last_kill_at")
 
-  character     Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  character     Character     @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  enemyTemplate EnemyTemplate @relation(fields: [enemyTemplateId], references: [id], onDelete: Cascade)
 
   @@id([characterId, enemyTemplateId])
   @@map("player_bestiary")
@@ -202,7 +243,7 @@ model PlayerAchievement {
 }
 
 model Run {
-  id              String   @id @default(uuid())
+  id              String   @id
   characterId     String   @map("character_id")
   partyId         String?  @map("party_id")
   result          String?  // extracted / died / abandoned
@@ -239,7 +280,7 @@ model RunParticipant {
 }
 
 model Party {
-  id                String    @id @default(uuid())
+  id                String    @id
   leaderCharacterId String    @map("leader_character_id")
   status            String    @default("forming") // forming / in_run / disbanded
   currentRunId      String?   @map("current_run_id")

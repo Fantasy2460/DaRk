@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { api } from '../network/ApiClient';
 import { SaveManager } from '../managers/SaveManager';
 import { GameState } from '../managers/GameState';
+import { ItemDataManager } from '../managers/ItemDataManager';
 import type { ClassType } from '../types';
 
 export class LoginScene extends Phaser.Scene {
@@ -12,6 +13,7 @@ export class LoginScene extends Phaser.Scene {
   private isLoginMode = true;
   private creatingCharacter = false;
   private loginUiElements: Phaser.GameObjects.GameObject[] = [];
+  private selectUiElements: Phaser.GameObjects.GameObject[] = [];
   private charNameInput?: HTMLInputElement;
 
   constructor() {
@@ -158,18 +160,19 @@ export class LoginScene extends Phaser.Scene {
   }
 
   private async tryAutoLogin() {
-    const token = SaveManager.loadLocal(); // 仅检查本地是否有存档数据，不意味着有 token
     if (!api.getToken()) return;
 
     this.setStatus('正在自动登录...', '#60a5fa');
     try {
       const { characters } = await api.getCharacters();
-      if (characters && characters.length > 0) {
+      if (!characters || characters.length === 0) {
+        this.showCharacterCreate();
+      } else if (characters.length === 1) {
         SaveManager.setCharacterId(characters[0].id);
         await GameState.getInstance().syncFromServer();
         this.cleanupAndGo('MainMenuScene');
       } else {
-        this.showCharacterCreate();
+        this.showCharacterSelect(characters);
       }
     } catch {
       api.logout();
@@ -223,16 +226,94 @@ export class LoginScene extends Phaser.Scene {
   private async loadCharacterAndProceed() {
     try {
       const { characters } = await api.getCharacters();
-      if (characters && characters.length > 0) {
+      await ItemDataManager.load();
+      if (!characters || characters.length === 0) {
+        this.showCharacterCreate();
+      } else if (characters.length === 1) {
         SaveManager.setCharacterId(characters[0].id);
         await GameState.getInstance().syncFromServer();
         this.cleanupAndGo('MainMenuScene');
       } else {
-        this.showCharacterCreate();
+        this.showCharacterSelect(characters);
       }
     } catch (e: any) {
       this.setStatus(e.message || '获取角色失败');
     }
+  }
+
+  private showCharacterSelect(characters: any[]) {
+    if (this.creatingCharacter) return;
+    this.creatingCharacter = true;
+
+    // 隐藏登录 UI
+    this.loginUiElements.forEach((el) => (el as any).setVisible(false));
+    this.domContainer.style.display = 'none';
+    this.setStatus('');
+
+    const cx = this.scale.width / 2;
+
+    // 标题
+    const title = this.add.text(cx, 160, '选择你的角色', {
+      fontSize: '28px',
+      color: '#e2e8f0',
+      fontStyle: 'bold',
+    }).setOrigin(0.5);
+    this.selectUiElements.push(title);
+
+    const classColors: Record<string, number> = {
+      warrior: 0xef4444,
+      mage: 0x3b82f6,
+      sage: 0xeab308,
+    };
+    const classNames: Record<string, string> = {
+      warrior: '战士',
+      mage: '法师',
+      sage: '贤者',
+    };
+
+    const startY = 240;
+    const cardH = 70;
+    const gap = 16;
+
+    characters.forEach((char, idx) => {
+      const y = startY + idx * (cardH + gap);
+      const color = classColors[char.classType] || 0x475569;
+
+      const container = this.add.container(cx, y);
+      const bg = this.add.rectangle(0, 0, 320, cardH, 0x1e293b, 0.8)
+        .setStrokeStyle(2, color)
+        .setInteractive({ useHandCursor: true });
+      const nameText = this.add.text(-130, -12, char.name, {
+        fontSize: '18px',
+        color: '#ffffff',
+        fontStyle: 'bold',
+      }).setOrigin(0, 0.5);
+      const infoText = this.add.text(-130, 14, `${classNames[char.classType] || char.classType} | Lv.${char.level}`, {
+        fontSize: '14px',
+        color: '#94a3b8',
+      }).setOrigin(0, 0.5);
+
+      container.add([bg, nameText, infoText]);
+      this.selectUiElements.push(container);
+
+      bg.on('pointerover', () => bg.setFillStyle(0x334155, 0.9));
+      bg.on('pointerout', () => bg.setFillStyle(0x1e293b, 0.8));
+      bg.on('pointerdown', async () => {
+        SaveManager.setCharacterId(char.id);
+        await GameState.getInstance().syncFromServer();
+        this.cleanupAndGo('MainMenuScene');
+      });
+    });
+
+    // 创建新角色按钮
+    const btnY = startY + characters.length * (cardH + gap) + 20;
+    const newCharBtn = this.createButton(cx, btnY, 180, 40, '+ 创建新角色', 0x22c55e, () => {
+      this.selectUiElements.forEach((el) => el.destroy());
+      this.selectUiElements = [];
+      this.creatingCharacter = false;
+      this.showCharacterCreate();
+    });
+    this.selectUiElements.push(newCharBtn.container);
   }
 
   private showCharacterCreate() {
@@ -357,6 +438,8 @@ export class LoginScene extends Phaser.Scene {
     if (this.charNameInput && this.charNameInput.parentElement) {
       this.charNameInput.parentElement.remove();
     }
+    this.selectUiElements.forEach((el) => el.destroy());
+    this.selectUiElements = [];
     this.scene.start(sceneKey);
   }
 
@@ -367,5 +450,7 @@ export class LoginScene extends Phaser.Scene {
     if (this.charNameInput && this.charNameInput.parentElement) {
       this.charNameInput.parentElement.remove();
     }
+    this.selectUiElements.forEach((el) => el.destroy());
+    this.selectUiElements = [];
   }
 }

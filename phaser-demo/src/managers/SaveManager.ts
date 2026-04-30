@@ -1,5 +1,6 @@
 import type { GameSave } from '../types';
 import { api } from '../network/ApiClient';
+import { setAuditCharacterId } from '../utils/AuditLogger';
 
 const SAVE_KEY = 'dark_journey_save_v1';
 const CHARACTER_ID_KEY = 'dj_character_id';
@@ -34,8 +35,10 @@ export class SaveManager {
   static setCharacterId(id: string | null) {
     if (id) {
       localStorage.setItem(CHARACTER_ID_KEY, id);
+      setAuditCharacterId(id);
     } else {
       localStorage.removeItem(CHARACTER_ID_KEY);
+      setAuditCharacterId(null);
     }
   }
 

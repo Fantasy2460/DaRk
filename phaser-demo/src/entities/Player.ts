@@ -210,9 +210,7 @@ export class Player {
   }
 
   faceTo(worldX: number, worldY: number): void {
-    const cx = this.body?.center?.x ?? this.container.x;
-    const cy = this.body?.center?.y ?? this.container.y;
-    this.facingAngle = Phaser.Math.Angle.Between(cx, cy, worldX, worldY);
+    this.facingAngle = Phaser.Math.Angle.Between(this.container.x, this.container.y, worldX, worldY);
   }
 
   dodge(): boolean {

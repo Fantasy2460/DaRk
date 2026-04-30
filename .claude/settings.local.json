@@ -33,7 +33,17 @@
       "Bash(./node_modules/.bin/prisma migrate *)",
       "Bash(xargs kill *)",
       "Bash(psql *)",
-      "Bash(kill -9 10008 16601 16076 16936)"
+      "Bash(kill -9 10008 16601 16076 16936)",
+      "Bash(git reset *)",
+      "Bash(PGPASSWORD=journey123 psql *)",
+      "Bash(PGPASSWORD=darkjourney psql *)",
+      "Bash(curl -s http://localhost:3001/api/health)",
+      "Bash(pkill -f \"tsx watch src/index.ts\")",
+      "Bash(curl -s http://localhost:3001/api/enemies)",
+      "Bash(curl -s http://localhost:3001/api/items)",
+      "Bash(curl -s http://localhost:3001/api/shops/potion/items)",
+      "Bash(curl -s -X POST http://localhost:3001/api/audit -H 'Content-Type: application/json' -H 'Authorization: Bearer invalid' -d '{\"action\":\"test\",\"details\":{\"foo\":\"bar\"}}')",
+      "Bash(curl *)"
     ]
   }
 }

@@ -7,7 +7,9 @@ import { EquipmentSystem } from '../systems/EquipmentSystem';
 import { InventorySystem } from '../systems/InventorySystem';
 import { CLASSES } from '../data/classes';
 import { ITEMS, CONSUMABLES } from '../data/items';
+import { ItemDataManager } from '../managers/ItemDataManager';
 import { GAME_CONFIG, RARITY_COLORS, SLOT_NAMES } from '../config/gameConfig';
+import { logShopBuy, logEquipChange } from '../utils/AuditLogger';
 import type { Item, Consumable } from '../types';
 
 interface NPCConfig {
@@ -50,71 +52,19 @@ const NPCS: NPCConfig[] = [
   },
 ];
 
-const SHOP_ITEMS: Record<string, (Item | Consumable)[]> = {
-  weapon: [
-    ITEMS.find((i) => i.id === 'rusty_sword')!,
-    ITEMS.find((i) => i.id === 'wooden_staff')!,
-    ITEMS.find((i) => i.id === 'cracked_wand')!,
-    ITEMS.find((i) => i.id === 'iron_sword')!,
-    ITEMS.find((i) => i.id === 'shadow_dagger')!,
-  ],
-  armor: [
-    ITEMS.find((i) => i.id === 'cloth_helm')!,
-    ITEMS.find((i) => i.id === 'leather_armor')!,
-    ITEMS.find((i) => i.id === 'cloth_pants')!,
-    ITEMS.find((i) => i.id === 'old_boots')!,
-    ITEMS.find((i) => i.id === 'iron_helm')!,
-    ITEMS.find((i) => i.id === 'chain_armor')!,
-    ITEMS.find((i) => i.id === 'leather_boots')!,
-    ITEMS.find((i) => i.id === 'wooden_shield')!,
-    ITEMS.find((i) => i.id === 'iron_shield')!,
-  ],
-  potion: [
-    CONSUMABLES.find((i) => i.id === 'hp_potion_small')!,
-    CONSUMABLES.find((i) => i.id === 'hp_potion_large')!,
-    CONSUMABLES.find((i) => i.id === 'mp_potion_small')!,
-    CONSUMABLES.find((i) => i.id === 'mp_potion_large')!,
-    CONSUMABLES.find((i) => i.id === 'regen_potion')!,
-    CONSUMABLES.find((i) => i.id === 'mana_regen_potion')!,
-    CONSUMABLES.find((i) => i.id === 'vision_potion')!,
-  ],
-};
-
-const SHOP_PRICES: Record<string, number> = {
-  rusty_sword: 50,
-  wooden_staff: 50,
-  cracked_wand: 50,
-  cloth_helm: 40,
-  leather_armor: 60,
-  cloth_pants: 40,
-  old_boots: 40,
-  wooden_shield: 40,
-  iron_sword: 150,
-  shadow_dagger: 150,
-  iron_helm: 120,
-  chain_armor: 180,
-  leather_boots: 100,
-  iron_shield: 120,
-  hp_potion_small: 30,
-  hp_potion_large: 80,
-  mp_potion_small: 30,
-  mp_potion_large: 80,
-  regen_potion: 60,
-  mana_regen_potion: 60,
-  vision_potion: 100,
-};
-
 export class MainCityScene extends Phaser.Scene {
   private player!: Player;
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
   private npcs: { config: NPCConfig; container: Phaser.GameObjects.Container; interactHint?: Phaser.GameObjects.Text }[] = [];
   private shopOpen = false;
   private shopUI: Phaser.GameObjects.GameObject[] = [];
+  private currentShopType: string = '';
   private bagOpen = false;
   private bagUI: Phaser.GameObjects.GameObject[] = [];
   private infoText!: Phaser.GameObjects.Text;
   private goldText!: Phaser.GameObjects.Text;
   private levelText!: Phaser.GameObjects.Text;
+  private shopCache = new Map<string, (Item | Consumable)[]>();
 
   constructor() {
     super({ key: 'MainCityScene' });
@@ -282,6 +232,7 @@ export class MainCityScene extends Phaser.Scene {
       K: Phaser.Input.Keyboard.KeyCodes.K,
       N: Phaser.Input.Keyboard.KeyCodes.N,
       C: Phaser.Input.Keyboard.KeyCodes.C,
+      V: Phaser.Input.Keyboard.KeyCodes.V,
     }) as Record<string, Phaser.Input.Keyboard.Key>;
   }
 
@@ -303,7 +254,16 @@ export class MainCityScene extends Phaser.Scene {
   }
 
   update(_time: number, delta: number) {
-    if (this.shopOpen || this.bagOpen) return;
+    if (this.shopOpen || this.bagOpen) {
+      if (Phaser.Input.Keyboard.JustDown(this.keys.ESC)) {
+        if (this.shopOpen) this.closeShop();
+        if (this.bagOpen) this.closeBag();
+      }
+      if (Phaser.Input.Keyboard.JustDown(this.keys.B)) {
+        this.toggleBag().catch(() => {});
+      }
+      return;
+    }
 
     this.handleMovement();
     this.handleInteraction();
@@ -332,7 +292,7 @@ export class MainCityScene extends Phaser.Scene {
         nearNPC = true;
         npc.interactHint?.setVisible(true);
         if (Phaser.Input.Keyboard.JustDown(this.keys.E)) {
-          this.openShop(npc.config);
+          this.openShop(npc.config).catch(() => {});
         }
       } else {
         npc.interactHint?.setVisible(false);
@@ -363,6 +323,9 @@ export class MainCityScene extends Phaser.Scene {
     if (Phaser.Input.Keyboard.JustDown(this.keys.C)) {
       this.scene.start('CharacterScene');
     }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.V)) {
+      this.scene.start('BestiaryScene');
+    }
     if (Phaser.Input.Keyboard.JustDown(this.keys.ESC)) {
       if (this.shopOpen) this.closeShop();
       if (this.bagOpen) this.closeBag();
@@ -377,9 +340,10 @@ export class MainCityScene extends Phaser.Scene {
 
   // ========== 商店 ==========
 
-  private openShop(npc: NPCConfig) {
+  private async openShop(npc: NPCConfig) {
     if (this.shopOpen) return;
     this.shopOpen = true;
+    this.currentShopType = npc.shopType;
 
     const cam = this.cameras.main;
     const cx = cam.width / 2;
@@ -403,33 +367,71 @@ export class MainCityScene extends Phaser.Scene {
     }).setOrigin(0.5).setScrollFactor(0).setDepth(3002);
     this.shopUI.push(closeHint);
 
-    const items = SHOP_ITEMS[npc.shopType] ?? [];
+    let shopItems: any[] = [];
+    try {
+      const { items } = await api.getShopItems(npc.shopType);
+      shopItems = items ?? [];
+    } catch (e) {
+      console.warn('从服务器加载商店商品失败，使用本地数据:', e);
+      const fallbackIds: Record<string, string[]> = {
+        weapon: ['rusty_sword', 'wooden_staff', 'cracked_wand', 'iron_sword', 'shadow_dagger'],
+        armor: ['cloth_helm', 'leather_armor', 'cloth_pants', 'old_boots', 'iron_helm', 'chain_armor', 'leather_boots', 'wooden_shield', 'iron_shield'],
+        potion: ['hp_potion_small', 'hp_potion_large', 'mp_potion_small', 'mp_potion_large', 'regen_potion', 'mana_regen_potion', 'vision_potion'],
+      };
+      const fallbackPrices: Record<string, number> = {
+        rusty_sword: 50, wooden_staff: 50, cracked_wand: 50,
+        iron_sword: 150, shadow_dagger: 150,
+        cloth_helm: 40, leather_armor: 60, cloth_pants: 40, old_boots: 40,
+        wooden_shield: 40, iron_helm: 120, chain_armor: 180, leather_boots: 100, iron_shield: 120,
+        hp_potion_small: 30, hp_potion_large: 80, mp_potion_small: 30, mp_potion_large: 80,
+        regen_potion: 60, mana_regen_potion: 60, vision_potion: 100,
+      };
+      const ids = fallbackIds[npc.shopType] ?? [];
+      shopItems = ids.map((id) => {
+        const equip = ItemDataManager.getItemById(id);
+        if (equip) {
+          return { id: equip.id, name: equip.name, type: 'equipment', slot: equip.slot, rarity: equip.rarity, description: equip.description, price: fallbackPrices[id] ?? 100, stats: equip.stats };
+        }
+        const potion = ItemDataManager.getConsumableById(id);
+        return { id: potion!.id, name: potion!.name, type: 'consumable', description: potion!.description, price: fallbackPrices[id] ?? 100, consumableType: potion!.type, consumableValue: potion!.value, consumableDuration: potion!.duration };
+      });
+    }
+
     const startX = cx - 220;
     const startY = cy - 140;
     const colW = 220;
     const rowH = 55;
 
-    for (let i = 0; i < items.length; i++) {
+    for (let i = 0; i < shopItems.length; i++) {
       const col = i % 2;
       const row = Math.floor(i / 2);
       const x = startX + col * colW + colW / 2;
       const y = startY + row * rowH + rowH / 2;
 
-      const item = items[i];
-      const price = SHOP_PRICES[item.id] ?? 100;
-      const isEquip = 'rarity' in item;
-      const color = isEquip ? RARITY_COLORS[(item as Item).rarity] : 0x22c55e;
+      const raw = shopItems[i];
+      const shopItemId = raw.shopItemId as number;
+      const price = raw.price ?? 100;
+      const isEquip = raw.type === 'equipment';
+      const rarity = raw.rarity ?? 'C';
+      const color = isEquip ? RARITY_COLORS[rarity] : 0x22c55e;
+      const name = raw.name ?? '未知物品';
+      const description = raw.description ?? '';
+
+      // 转换为前端 Item / Consumable 格式用于购买
+      const item: Item | Consumable = isEquip
+        ? { id: raw.id, name, rarity, slot: raw.slot, stats: raw.stats ?? {}, description }
+        : { id: raw.id, name, type: raw.consumableType ?? 'instantHp', value: raw.consumableValue ?? 0, duration: raw.consumableDuration, description };
 
       const itemBg = this.add.rectangle(x, y, colW - 16, rowH - 8, 0x0f172a)
         .setScrollFactor(0).setDepth(3002).setStrokeStyle(1, color);
       this.shopUI.push(itemBg);
 
-      const nameText = this.add.text(x - colW / 2 + 12, y - 10, item.name, {
+      const nameText = this.add.text(x - colW / 2 + 12, y - 10, name, {
         fontSize: '12px', color: '#' + color.toString(16).padStart(6, '0'),
       }).setScrollFactor(0).setDepth(3003);
       this.shopUI.push(nameText);
 
-      const descText = this.add.text(x - colW / 2 + 12, y + 4, isEquip ? (item as Item).description.slice(0, 16) + '...' : (item as Consumable).description.slice(0, 16) + '...', {
+      const descText = this.add.text(x - colW / 2 + 12, y + 4, description.slice(0, 16) + '...', {
         fontSize: '10px', color: '#94a3b8',
       }).setScrollFactor(0).setDepth(3003);
       this.shopUI.push(descText);
@@ -442,35 +444,48 @@ export class MainCityScene extends Phaser.Scene {
       itemBg.setInteractive({ useHandCursor: true });
       itemBg.on('pointerover', () => {
         itemBg.setFillStyle(0x1e293b);
-        this.showInfo(`${item.name} - ${isEquip ? (item as Item).description : (item as Consumable).description}\n价格: ${price} 金币`);
+        this.showInfo(`${name} - ${description}\n价格: ${price} 金币`);
       });
       itemBg.on('pointerout', () => {
         itemBg.setFillStyle(0x0f172a);
         this.showInfo('');
       });
-      itemBg.on('pointerdown', () => this.buyItem(item, price));
+      itemBg.on('pointerdown', () => this.buyItem(shopItemId, item, price));
     }
 
     overlay.on('pointerdown', () => this.closeShop());
   }
 
-  private buyItem(item: Item | Consumable, price: number) {
+  private async buyItem(shopItemId: number, item: Item | Consumable, price: number) {
     const state = GameState.getInstance();
-    if (state.save.gold < price) {
-      this.showInfo('金币不足！');
+    const characterId = SaveManager.getCharacterId();
+    if (!characterId) {
+      this.showInfo('未登录，无法购买');
       return;
     }
 
-    const emptyIdx = state.save.cityInventory.findIndex((s) => !s.item);
-    if (emptyIdx < 0) {
-      this.showInfo('背包已满！');
-      return;
-    }
+    this.showInfo('购买中...');
+    try {
+      const result = await api.buyShopItem(characterId, shopItemId);
+      const goldBefore = state.save.gold;
+      state.save.gold = result.goldAfter;
+      state.save.cityInventory[result.slotIndex] = { item: result.item };
+      state.persist();
+      this.showInfo(`购买成功: ${result.item.name}`);
 
-    state.save.gold -= price;
-    state.save.cityInventory[emptyIdx] = { item: { ...item } };
-    state.persist();
-    this.showInfo(`购买成功: ${item.name}`);
+      logShopBuy({
+        itemName: result.item.name,
+        itemId: result.item.id,
+        itemRarity: result.item.rarity,
+        shopType: this.currentShopType,
+        price,
+        goldBefore,
+        goldAfter: result.goldAfter,
+        slotIndex: result.slotIndex,
+      });
+    } catch (e: any) {
+      this.showInfo(e.message || '购买失败');
+    }
   }
 
   private closeShop() {

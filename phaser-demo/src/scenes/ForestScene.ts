@@ -7,11 +7,19 @@ import { Enemy } from '../entities/Enemy';
 import { FogSystem } from '../systems/FogSystem';
 import { InventorySystem } from '../systems/InventorySystem';
 import { EquipmentSystem } from '../systems/EquipmentSystem';
-import { ENEMIES } from '../data/enemies';
-import { ITEMS, CONSUMABLES } from '../data/items';
+import { ItemDataManager } from '../managers/ItemDataManager';
 import { GAME_CONFIG, RARITY_COLORS, SLOT_NAMES, getExpToNextLevel } from '../config/gameConfig';
 import { CLASSES } from '../data/classes';
-import type { Item } from '../types';
+import {
+  logItemDrop,
+  logItemPickup,
+  logEquipChange,
+  logConsumableUse,
+  logDeath,
+  logExtract,
+  logGoDeeper,
+} from '../utils/AuditLogger';
+import type { Item, EnemyType } from '../types';
 
 export class ForestScene extends Phaser.Scene {
   private player!: Player;
@@ -22,6 +30,7 @@ export class ForestScene extends Phaser.Scene {
   private runEquipment!: EquipmentSystem;
   private portal!: Phaser.GameObjects.Container;
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
+  private enemyTemplates: EnemyType[] = [];
 
   // HUD
   private hpBar!: Phaser.GameObjects.Rectangle;
@@ -87,11 +96,16 @@ export class ForestScene extends Phaser.Scene {
   // 传送门菜单 UI
   private portalMenuUI: Phaser.GameObjects.GameObject[] = [];
 
+  private getMouseWorldPoint(): { x: number; y: number } {
+    const pointer = this.input.activePointer;
+    return this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+  }
+
   constructor() {
     super({ key: 'ForestScene' });
   }
 
-  create() {
+  async create() {
     const state = GameState.getInstance();
     if (!state.run) {
       this.scene.start('MainCityScene');
@@ -104,8 +118,8 @@ export class ForestScene extends Phaser.Scene {
     this.createGround();
     this.createTrees();
     this.createPlayer();
-    this.applyEquipmentStats();
-    this.createEnemies();
+    await this.applyEquipmentStats();
+    this.loadAndCreateEnemies().catch(() => {});
     this.createPortal();
     this.createHUD();
     this.setupInput();
@@ -172,13 +186,56 @@ export class ForestScene extends Phaser.Scene {
     this.player = new Player(this, startX, startY, state.save.selectedClass!, state.save.level);
   }
 
-  private createEnemies() {
+  private async loadAndCreateEnemies() {
+    if (this.enemyTemplates.length === 0) {
+      try {
+        const data = await api.getEnemies();
+        this.enemyTemplates = (data.enemies ?? []).map((e: any) => this.mapEnemyTemplate(e));
+      } catch (err) {
+        console.warn('从服务器加载敌人模板失败，使用本地数据:', err);
+        // 回退：从 ItemDataManager 获取的本地数据不会包含敌人模板
+        // 这里保留一个最小 fallback，或者直接从后端 init 逻辑复制一份
+        this.enemyTemplates = this.getFallbackEnemyTemplates();
+      }
+    }
+    this.spawnEnemies();
+  }
+
+  private mapEnemyTemplate(raw: any): EnemyType {
+    return {
+      id: raw.id,
+      name: raw.name,
+      hp: raw.hp,
+      attack: raw.attack,
+      defense: raw.defense,
+      speed: raw.speed,
+      aggroRange: raw.aggroRange,
+      attackRange: raw.attackRange,
+      color: parseInt(raw.colorHex, 16),
+      isBoss: raw.isBoss,
+      dropTable: raw.dropTableJson ? JSON.parse(raw.dropTableJson) : [],
+      expValue: raw.expValue,
+    };
+  }
+
+  private getFallbackEnemyTemplates(): EnemyType[] {
+    return [
+      { id: 'goblin', name: '哥布林', hp: 40, attack: 10, defense: 3, speed: 60, aggroRange: 180, attackRange: 40, color: 0x4ade80, isBoss: false, dropTable: [{ itemId: 'rusty_sword', chance: 0.1 }, { itemId: 'copper_ring', chance: 0.08 }, { itemId: 'hp_potion_small', chance: 0.15 }], expValue: 15 },
+      { id: 'skeleton', name: '骷髅兵', hp: 55, attack: 14, defense: 5, speed: 55, aggroRange: 200, attackRange: 40, color: 0xe5e7eb, isBoss: false, dropTable: [{ itemId: 'iron_sword', chance: 0.05 }, { itemId: 'wooden_shield', chance: 0.08 }, { itemId: 'hp_potion_small', chance: 0.1 }], expValue: 20 },
+      { id: 'wolf', name: '暗影狼', hp: 45, attack: 16, defense: 2, speed: 100, aggroRange: 250, attackRange: 45, color: 0x8b5cf6, isBoss: false, dropTable: [{ itemId: 'shadow_dagger', chance: 0.04 }, { itemId: 'leather_boots', chance: 0.06 }, { itemId: 'mp_potion_small', chance: 0.12 }], expValue: 18 },
+      { id: 'orc', name: '兽人战士', hp: 90, attack: 20, defense: 8, speed: 55, aggroRange: 200, attackRange: 50, color: 0x166534, isBoss: false, dropTable: [{ itemId: 'iron_helm', chance: 0.05 }, { itemId: 'chain_armor', chance: 0.04 }, { itemId: 'hp_potion_large', chance: 0.08 }], expValue: 25 },
+      { id: 'dark_mage', name: '黑暗法师', hp: 50, attack: 24, defense: 3, speed: 50, aggroRange: 300, attackRange: 180, color: 0x7c3aed, isBoss: false, dropTable: [{ itemId: 'crystal_staff', chance: 0.04 }, { itemId: 'magic_orb', chance: 0.02 }, { itemId: 'mp_potion_large', chance: 0.1 }], expValue: 22 },
+      { id: 'forest_troll', name: '森林巨魔', hp: 200, attack: 30, defense: 12, speed: 40, aggroRange: 220, attackRange: 55, color: 0x92400e, isBoss: true, dropTable: [{ itemId: 'flame_blade', chance: 0.05 }, { itemId: 'dragon_scale_armor', chance: 0.03 }, { itemId: 'crown_of_kings', chance: 0.01 }, { itemId: 'hp_potion_large', chance: 0.2 }], expValue: 60 },
+    ];
+  }
+
+  private spawnEnemies() {
     const count = Phaser.Math.Between(GAME_CONFIG.enemySpawnCount.min, GAME_CONFIG.enemySpawnCount.max);
     for (let i = 0; i < count; i++) {
       const x = Phaser.Math.Between(100, GAME_CONFIG.worldWidth - 100);
       const y = Phaser.Math.Between(100, GAME_CONFIG.worldHeight - 100);
       const isBoss = Math.random() < GAME_CONFIG.bossSpawnChance;
-      const pool = isBoss ? ENEMIES.filter((e) => e.isBoss) : ENEMIES.filter((e) => !e.isBoss);
+      const pool = isBoss ? this.enemyTemplates.filter((e) => e.isBoss) : this.enemyTemplates.filter((e) => !e.isBoss);
       if (pool.length === 0) continue;
       const config = Phaser.Utils.Array.GetRandom(pool);
       const enemy = new Enemy(this, x, y, config);
@@ -413,11 +470,13 @@ export class ForestScene extends Phaser.Scene {
       B: Phaser.Input.Keyboard.KeyCodes.B,
       N: Phaser.Input.Keyboard.KeyCodes.N,
       C: Phaser.Input.Keyboard.KeyCodes.C,
+      V: Phaser.Input.Keyboard.KeyCodes.V,
       ONE: Phaser.Input.Keyboard.KeyCodes.ONE,
       TWO: Phaser.Input.Keyboard.KeyCodes.TWO,
       THREE: Phaser.Input.Keyboard.KeyCodes.THREE,
       FOUR: Phaser.Input.Keyboard.KeyCodes.FOUR,
       FIVE: Phaser.Input.Keyboard.KeyCodes.FIVE,
+      ESC: Phaser.Input.Keyboard.KeyCodes.ESC,
     }) as Record<string, Phaser.Input.Keyboard.Key>;
   }
 
@@ -430,13 +489,10 @@ export class ForestScene extends Phaser.Scene {
       const state = GameState.getInstance();
       if (!state.run) return;
 
-      // 每帧最开始就更新角色朝向：用相机实时滚动 + 鼠标屏幕坐标算出精确世界坐标
+      // 每帧最开始就更新角色朝向
       try {
-        const pointer = this.input.activePointer;
-        const cam = this.cameras.main;
-        const worldX = cam.scrollX + pointer.x / cam.zoom;
-        const worldY = cam.scrollY + pointer.y / cam.zoom;
-        this.player.faceTo(worldX, worldY);
+        const mp = this.getMouseWorldPoint();
+        this.player.faceTo(mp.x, mp.y);
       } catch {
         // 朝向计算失败不应阻塞游戏主逻辑
       }
@@ -451,8 +507,10 @@ export class ForestScene extends Phaser.Scene {
       this.handleChanneling();
       this.handleConsumables();
       this.handleBagInput();
+      this.handleEscInput();
       this.handleSkillPage();
       this.handleCharacterPage();
+      this.handleBestiaryPage();
       this.handlePortal();
       this.updateProjectiles(delta);
       this.updateLightOrbs(delta);
@@ -724,7 +782,8 @@ export class ForestScene extends Phaser.Scene {
     // 其他技能瞬发
     for (let i = 2; i < skillKeys.length; i++) {
       if (Phaser.Input.Keyboard.JustDown(this.keys[skillKeys[i]])) {
-        const result = this.player.castSkill(i, pointer.worldX, pointer.worldY);
+        const mp = this.getMouseWorldPoint();
+        const result = this.player.castSkill(i, mp.x, mp.y);
         if (result) {
           this.castSkillEffect(result.skill, result.targetX, result.targetY);
         }
@@ -752,7 +811,8 @@ export class ForestScene extends Phaser.Scene {
         return;
       }
       const chargeRatio = this.player.releaseCharge();
-      const result = this.player.castSkill(skillIndex, pointer.worldX, pointer.worldY);
+      const mp = this.getMouseWorldPoint();
+      const result = this.player.castSkill(skillIndex, mp.x, mp.y);
       if (result) {
         this.castSkillEffect(result.skill, result.targetX, result.targetY, chargeRatio);
       }
@@ -766,14 +826,11 @@ export class ForestScene extends Phaser.Scene {
 
     // 星落：蓄满1秒后自动释放
     if (skillId === 'meteor' && ratio >= 1) {
-      const pointer = this.input.activePointer;
-      const cam = this.cameras.main;
-      const worldX = cam.scrollX + pointer.x / cam.zoom;
-      const worldY = cam.scrollY + pointer.y / cam.zoom;
+      const mp = this.getMouseWorldPoint();
       const chargeRatio = this.player.releaseCharge();
       const skill = this.player.getSkills().find((s) => s.id === 'meteor');
       if (skill) {
-        const result = this.player.castSkill(1, worldX, worldY);
+        const result = this.player.castSkill(1, mp.x, mp.y);
         if (result) {
           this.castSkillEffect(result.skill, result.targetX, result.targetY, chargeRatio);
         }
@@ -818,6 +875,14 @@ export class ForestScene extends Phaser.Scene {
     const px = this.player.container.x;
     const py = this.player.container.y;
     this.showFloatingText(px, py - 20, `使用 ${consumable.name}`, 0x22c55e);
+
+    logConsumableUse({
+      itemName: consumable.name,
+      itemId: consumable.id,
+      effectType: consumable.type,
+      depth: GameState.getInstance().run?.forestDepth,
+      slotIndex: index,
+    });
 
     const burst = this.add.ellipse(px, py, 30, 30, 0x22c55e, 0.5);
     burst.setDepth(999);
@@ -1115,6 +1180,16 @@ export class ForestScene extends Phaser.Scene {
     }
   }
 
+  private handleEscInput() {
+    if (Phaser.Input.Keyboard.JustDown(this.keys.ESC)) {
+      if (this.bagOpen) {
+        this.closeBag();
+      } else if (this.portalMenuUI.length > 0) {
+        this.closePortalMenu();
+      }
+    }
+  }
+
   private handleSkillPage() {
     if (Phaser.Input.Keyboard.JustDown(this.keys.N)) {
       this.scene.start('SkillScene');
@@ -1124,6 +1199,12 @@ export class ForestScene extends Phaser.Scene {
   private handleCharacterPage() {
     if (Phaser.Input.Keyboard.JustDown(this.keys.C)) {
       this.scene.start('CharacterScene');
+    }
+  }
+
+  private handleBestiaryPage() {
+    if (Phaser.Input.Keyboard.JustDown(this.keys.V)) {
+      this.scene.start('BestiaryScene');
     }
   }
 
@@ -1320,7 +1401,7 @@ export class ForestScene extends Phaser.Scene {
     }
   }
 
-  private equipFromInventory(index: number) {
+  private async equipFromInventory(index: number) {
     const item = this.runInventory.slots[index].item;
     if (!item || !('rarity' in item)) return;
 
@@ -1339,11 +1420,24 @@ export class ForestScene extends Phaser.Scene {
       }
     }
 
-    this.applyEquipmentStats();
+    logEquipChange({
+      operation: 'equip',
+      slot: (item as Item).slot,
+      itemName: item.name,
+      itemId: item.id,
+      itemRarity: (item as Item).rarity,
+      oldItemName: oldItem?.name,
+      oldItemId: oldItem?.id,
+      oldItemRarity: oldItem?.rarity,
+      depth: GameState.getInstance().run?.forestDepth,
+      location: 'forest',
+    });
+
+    await this.applyEquipmentStats();
     this.refreshBag();
   }
 
-  private unequipItem(slot: string) {
+  private async unequipItem(slot: string) {
     const oldItem = this.runEquipment.unequip(slot as any);
     if (!oldItem) return;
 
@@ -1356,25 +1450,81 @@ export class ForestScene extends Phaser.Scene {
       return;
     }
 
-    this.applyEquipmentStats();
+    logEquipChange({
+      operation: 'unequip',
+      slot,
+      itemName: oldItem.name,
+      itemId: oldItem.id,
+      itemRarity: oldItem.rarity,
+      depth: GameState.getInstance().run?.forestDepth,
+      location: 'forest',
+    });
+
+    await this.applyEquipmentStats();
     this.refreshBag();
   }
 
-  private applyEquipmentStats() {
-    const bonus = this.runEquipment.getTotalStats();
+  private async applyEquipmentStats() {
     const state = GameState.getInstance();
-    const cls = CLASSES.find((c) => c.id === state.save.selectedClass);
-    if (!cls) return;
+    const bonus = this.runEquipment.getTotalStats();
 
-    const levelMultiplier = 1 + (state.save.level - 1) * 0.05;
+    let maxHp: number;
+    let maxMp: number;
+    let attack: number;
+    let defense: number;
+    let speed: number;
 
-    this.player.maxHp = Math.floor(cls.baseStats.maxHp * levelMultiplier) + (bonus.maxHp ?? 0);
+    const characterId = SaveManager.getCharacterId();
+    if (characterId && api.getToken()) {
+      try {
+        const eqData: Record<string, any | null> = {};
+        for (const [slot, item] of Object.entries(this.runEquipment.equipment)) {
+          eqData[slot] = item;
+        }
+        const res = await api.calculateCharacterStats(characterId, eqData);
+        const fs = res.stats.finalStats;
+        maxHp = fs.maxHp;
+        maxMp = fs.maxMp;
+        attack = fs.attack;
+        defense = fs.defense;
+        speed = fs.speed;
+      } catch (e) {
+        console.warn('从服务器计算属性失败，回退本地:', e);
+        const local = this.calculateStatsLocally(state, bonus);
+        maxHp = local.maxHp;
+        maxMp = local.maxMp;
+        attack = local.attack;
+        defense = local.defense;
+        speed = local.speed;
+      }
+    } else {
+      const local = this.calculateStatsLocally(state, bonus);
+      maxHp = local.maxHp;
+      maxMp = local.maxMp;
+      attack = local.attack;
+      defense = local.defense;
+      speed = local.speed;
+    }
+
+    this.player.maxHp = maxHp;
     this.player.hp = Math.min(this.player.hp, this.player.maxHp);
-    this.player.maxMp = Math.floor(cls.baseStats.maxMp * levelMultiplier) + (bonus.mp ?? 0);
+    this.player.maxMp = maxMp;
     this.player.mp = Math.min(this.player.mp, this.player.maxMp);
-    this.player.attack = Math.floor(cls.baseStats.attack * levelMultiplier) + (bonus.attack ?? 0);
-    this.player.defense = Math.floor(cls.baseStats.defense * levelMultiplier) + (bonus.defense ?? 0);
-    this.player.speed = Math.floor(cls.baseStats.speed * levelMultiplier) + (bonus.speed ?? 0);
+    this.player.attack = attack;
+    this.player.defense = defense;
+    this.player.speed = speed;
+  }
+
+  private calculateStatsLocally(state: ReturnType<typeof GameState.getInstance>, bonus: ReturnType<EquipmentSystem['getTotalStats']>) {
+    const cls = CLASSES.find((c) => c.id === state.save.selectedClass);
+    const levelMultiplier = 1 + (state.save.level - 1) * 0.05;
+    return {
+      maxHp: Math.floor((cls?.baseStats.maxHp ?? 100) * levelMultiplier) + (bonus.maxHp ?? 0),
+      maxMp: Math.floor((cls?.baseStats.maxMp ?? 50) * levelMultiplier) + (bonus.mp ?? 0),
+      attack: Math.floor((cls?.baseStats.attack ?? 10) * levelMultiplier) + (bonus.attack ?? 0),
+      defense: Math.floor((cls?.baseStats.defense ?? 5) * levelMultiplier) + (bonus.defense ?? 0),
+      speed: Math.floor((cls?.baseStats.speed ?? 150) * levelMultiplier) + (bonus.speed ?? 0),
+    };
   }
 
   private showBagInfo(text: string) {
@@ -1443,6 +1593,13 @@ export class ForestScene extends Phaser.Scene {
     this.closePortalMenu();
     const state = GameState.getInstance();
     if (state.run) {
+      const itemsCarried = this.runInventory.slots.filter((s) => s.item !== null).length;
+      logExtract({
+        depth: state.run.forestDepth,
+        enemiesKilled: state.run.enemiesKilled,
+        elapsedTimeSec: Math.floor(state.run.elapsedTime / 1000),
+        itemsCarried,
+      });
       state.extractRun();
       this.scene.start('GameOverScene', {
         survived: true,
@@ -1457,13 +1614,19 @@ export class ForestScene extends Phaser.Scene {
     this.closePortalMenu();
     const state = GameState.getInstance();
     if (state.run) {
+      const fromDepth = state.run.forestDepth;
       state.run.forestDepth++;
+      logGoDeeper({
+        fromDepth,
+        toDepth: state.run.forestDepth,
+        enemiesKilledSoFar: state.run.enemiesKilled,
+      });
       // 重新生成敌人，保留当前状态
       this.enemies.forEach((e) => e.destroy());
       this.enemies = [];
       this.drops.forEach((d) => d.container.destroy());
       this.drops = [];
-      this.createEnemies();
+      this.loadAndCreateEnemies().catch(() => {});
 
       // 移动传送门
       this.portal.setPosition(
@@ -1475,15 +1638,29 @@ export class ForestScene extends Phaser.Scene {
 
   private handleEnemyDeath(enemy: Enemy) {
     const state = GameState.getInstance();
-    state.recordKill(enemy.container.getData('config').id);
+    const enemyConfig = enemy.container.getData('config');
+    state.recordKill(enemyConfig.id);
+    const depth = state.run?.forestDepth ?? 1;
 
     // 原有掉落表
     const table = enemy.getDropTable();
     for (const entry of table) {
       if (Math.random() < entry.chance) {
-        const itemDef = ITEMS.find((i) => i.id === entry.itemId) ?? CONSUMABLES.find((c) => c.id === entry.itemId);
+        const itemDef = ItemDataManager.findById(entry.itemId);
         if (itemDef && 'rarity' in itemDef) {
           this.spawnDrop(enemy.container.x, enemy.container.y, itemDef);
+          logItemDrop({
+            itemName: itemDef.name,
+            itemId: itemDef.id,
+            itemRarity: itemDef.rarity,
+            enemyName: enemyConfig.name,
+            enemyId: enemyConfig.id,
+            isBoss: enemyConfig.isBoss,
+            depth,
+            x: Math.round(enemy.container.x),
+            y: Math.round(enemy.container.y),
+            dropSource: 'dropTable',
+          });
         }
       }
     }
@@ -1496,17 +1673,41 @@ export class ForestScene extends Phaser.Scene {
       this.spawnMpDrop(enemy.container.x, enemy.container.y);
     }
     if (Math.random() < 0.10) {
-      const pool = ITEMS.filter((i) => i.rarity === 'C');
+      const pool = ItemDataManager.getItemsByRarity('C');
       if (pool.length > 0) {
         const item = Phaser.Utils.Array.GetRandom(pool);
         this.spawnDrop(enemy.container.x, enemy.container.y, item);
+        logItemDrop({
+          itemName: item.name,
+          itemId: item.id,
+          itemRarity: item.rarity,
+          enemyName: enemyConfig.name,
+          enemyId: enemyConfig.id,
+          isBoss: enemyConfig.isBoss,
+          depth,
+          x: Math.round(enemy.container.x),
+          y: Math.round(enemy.container.y),
+          dropSource: 'bonusC',
+        });
       }
     }
     if (Math.random() < 0.05) {
-      const pool = ITEMS.filter((i) => i.rarity === 'B');
+      const pool = ItemDataManager.getItemsByRarity('B');
       if (pool.length > 0) {
         const item = Phaser.Utils.Array.GetRandom(pool);
         this.spawnDrop(enemy.container.x, enemy.container.y, item);
+        logItemDrop({
+          itemName: item.name,
+          itemId: item.id,
+          itemRarity: item.rarity,
+          enemyName: enemyConfig.name,
+          enemyId: enemyConfig.id,
+          isBoss: enemyConfig.isBoss,
+          depth,
+          x: Math.round(enemy.container.x),
+          y: Math.round(enemy.container.y),
+          dropSource: 'bonusB',
+        });
       }
     }
 
@@ -1575,6 +1776,7 @@ export class ForestScene extends Phaser.Scene {
     }
 
     // 拾取掉落
+    const depth = GameState.getInstance().run?.forestDepth ?? 1;
     for (let i = this.drops.length - 1; i >= 0; i--) {
       const drop = this.drops[i];
       if (!drop || !drop.container?.active) {
@@ -1587,16 +1789,45 @@ export class ForestScene extends Phaser.Scene {
           const healAmount = Math.floor(this.player.maxHp * 0.2);
           this.player.heal(healAmount);
           this.showFloatingText(drop.container.x, drop.container.y, `+${healAmount} 生命`, 0x4ade80);
+          logItemPickup({
+            itemName: '生命球',
+            itemId: 'hp_orb',
+            depth,
+            x: Math.round(drop.container.x),
+            y: Math.round(drop.container.y),
+            slotIndex: -1,
+            source: 'hp_orb',
+          });
           if (drop.container.active) drop.container.destroy();
           this.drops.splice(i, 1);
         } else if (drop.effect === 'mp') {
           const restoreAmount = Math.floor(this.player.maxMp * 0.2);
           this.player.restoreMp(restoreAmount);
           this.showFloatingText(drop.container.x, drop.container.y, `+${restoreAmount} 魔法`, 0x60a5fa);
+          logItemPickup({
+            itemName: '魔法球',
+            itemId: 'mp_orb',
+            depth,
+            x: Math.round(drop.container.x),
+            y: Math.round(drop.container.y),
+            slotIndex: -1,
+            source: 'mp_orb',
+          });
           if (drop.container.active) drop.container.destroy();
           this.drops.splice(i, 1);
         } else if (drop.item && this.runInventory.addItem(drop.item)) {
           GameState.getInstance().recordItemFound(drop.item.id);
+          const slotIdx = this.runInventory.slots.findIndex((s) => s.item === drop.item);
+          logItemPickup({
+            itemName: drop.item.name,
+            itemId: drop.item.id,
+            itemRarity: drop.item.rarity,
+            depth,
+            x: Math.round(drop.container.x),
+            y: Math.round(drop.container.y),
+            slotIndex: slotIdx >= 0 ? slotIdx : -1,
+            source: 'ground_drop',
+          });
           if (drop.container.active) drop.container.destroy();
           this.drops.splice(i, 1);
         }
@@ -1651,7 +1882,7 @@ export class ForestScene extends Phaser.Scene {
 
       if (state.save.level > this.lastLevel) {
         this.lastLevel = state.save.level;
-        this.applyEquipmentStats();
+        this.applyEquipmentStats().catch(() => {});
         this.showFloatingText(this.player.container.x, this.player.container.y - 30, `升级！Lv.${state.save.level}`, 0xfbbf24);
       }
     }
@@ -1689,6 +1920,12 @@ export class ForestScene extends Phaser.Scene {
     if (this.player.isDead()) {
       const state = GameState.getInstance();
       const run = state.run;
+      logDeath({
+        depth: run?.forestDepth ?? 1,
+        enemiesKilled: run?.enemiesKilled ?? 0,
+        elapsedTimeSec: Math.floor((run?.elapsedTime ?? 0) / 1000),
+        cause: 'enemy_attack',
+      });
       state.dieInRun();
       this.scene.start('GameOverScene', {
         survived: false,
