@@ -6,8 +6,10 @@ import { MainCityScene } from './scenes/MainCityScene';
 import { SkillScene } from './scenes/SkillScene';
 import { CharacterScene } from './scenes/CharacterScene';
 import { BestiaryScene } from './scenes/BestiaryScene';
+import { EquipmentCodexScene } from './scenes/EquipmentCodexScene';
 import { ForestScene } from './scenes/ForestScene';
 import { GameOverScene } from './scenes/GameOverScene';
+import { GameState } from './managers/GameState';
 
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
@@ -23,7 +25,9 @@ const config: Phaser.Types.Core.GameConfig = {
       debug: false,
     },
   },
-  scene: [BootScene, LoginScene, MainMenuScene, MainCityScene, SkillScene, CharacterScene, BestiaryScene, ForestScene, GameOverScene],
+  scene: [BootScene, LoginScene, MainMenuScene, MainCityScene, SkillScene, CharacterScene, BestiaryScene, EquipmentCodexScene, ForestScene, GameOverScene],
 };
 
-new Phaser.Game(config);
+const game = new Phaser.Game(config);
+(window as any).game = game;
+(window as any).GameState = GameState;

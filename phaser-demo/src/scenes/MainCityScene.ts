@@ -9,7 +9,7 @@ import { CLASSES } from '../data/classes';
 import { ITEMS, CONSUMABLES } from '../data/items';
 import { ItemDataManager } from '../managers/ItemDataManager';
 import { GAME_CONFIG, RARITY_COLORS, SLOT_NAMES } from '../config/gameConfig';
-import { logShopBuy, logEquipChange } from '../utils/AuditLogger';
+import { logShopBuy, logEquipChange, logSell, logDiscard } from '../utils/AuditLogger';
 import type { Item, Consumable } from '../types';
 
 interface NPCConfig {
@@ -265,6 +265,11 @@ export class MainCityScene extends Phaser.Scene {
       return;
     }
 
+    // ESC 关闭独立的右键菜单（背包关闭时菜单已随 closeBag 清理，这里是兜底）
+    if (this.contextMenuUI.length > 0 && Phaser.Input.Keyboard.JustDown(this.keys.ESC)) {
+      this.closeContextMenu();
+    }
+
     this.handleMovement();
     this.handleInteraction();
     this.handleSpecialInput();
@@ -301,9 +306,7 @@ export class MainCityScene extends Phaser.Scene {
 
     const entranceDist = Phaser.Math.Distance.Between(px, py, 800, 1100);
     if (entranceDist < 80 && Phaser.Input.Keyboard.JustDown(this.keys.E)) {
-      const state = GameState.getInstance();
-      state.startRun();
-      this.scene.start('ForestScene');
+      void this.enterForest();
     }
 
     if (!nearNPC && entranceDist >= 80) {
@@ -313,18 +316,41 @@ export class MainCityScene extends Phaser.Scene {
     }
   }
 
+  private async enterForest() {
+    const state = GameState.getInstance();
+
+    // 锁屏提示
+    const cam = this.cameras.main;
+    const overlay = this.add.rectangle(cam.width / 2, cam.height / 2, cam.width, cam.height, 0x000000, 0.5)
+      .setScrollFactor(0).setDepth(5000);
+    const loadingText = this.add.text(cam.width / 2, cam.height / 2, '进入森林...', {
+      fontSize: '20px', color: '#ffffff',
+    }).setOrigin(0.5).setScrollFactor(0).setDepth(5001);
+
+    try {
+      await state.startRun();
+    } catch (e) {
+      console.warn('[MainCityScene] startRun 异常:', e);
+    } finally {
+      overlay.destroy();
+      loadingText.destroy();
+    }
+
+    this.scene.start('ForestScene');
+  }
+
   private async handleSpecialInput() {
     if (Phaser.Input.Keyboard.JustDown(this.keys.B)) {
       await this.toggleBag();
     }
     if (Phaser.Input.Keyboard.JustDown(this.keys.K) || Phaser.Input.Keyboard.JustDown(this.keys.N)) {
-      this.scene.start('SkillScene');
+      this.scene.run('SkillScene');
     }
     if (Phaser.Input.Keyboard.JustDown(this.keys.C)) {
-      this.scene.start('CharacterScene');
+      this.scene.run('CharacterScene');
     }
     if (Phaser.Input.Keyboard.JustDown(this.keys.V)) {
-      this.scene.start('BestiaryScene');
+      this.scene.run('BestiaryScene');
     }
     if (Phaser.Input.Keyboard.JustDown(this.keys.ESC)) {
       if (this.shopOpen) this.closeShop();
@@ -509,6 +535,7 @@ export class MainCityScene extends Phaser.Scene {
 
   private closeBag() {
     this.bagOpen = false;
+    this.closeContextMenu();
     if (this.infoText && this.infoText.active) {
       const cam = this.cameras.main;
       this.infoText.setPosition(cam.width / 2, cam.height - 60).setDepth(2000).setText('');
@@ -611,9 +638,12 @@ export class MainCityScene extends Phaser.Scene {
 
         bg.setInteractive({ useHandCursor: true });
         bg.on('pointerover', () => {
-          this.showInfo(`${item.name} [${item.rarity}]\n${item.description}\n${this.formatStats(item.stats)}`);
+          this.showInfo(`${item.name} [${item.rarity}]\n${item.description}\n${this.formatStats(item.stats)}\n点击卸下`);
         });
         bg.on('pointerout', () => this.showInfo(''));
+        bg.on('pointerdown', () => {
+          void this.unequipFromCity(slot);
+        });
       }
     });
 
@@ -657,13 +687,254 @@ export class MainCityScene extends Phaser.Scene {
         bg.setInteractive({ useHandCursor: true });
         bg.on('pointerover', () => {
           const desc = 'rarity' in slotItem
-            ? `${slotItem.name} [${(slotItem as Item).rarity}]\n${slotItem.description}\n${this.formatStats((slotItem as Item).stats)}`
-            : `${slotItem.name}\n${(slotItem as Consumable).description}`;
+            ? `${slotItem.name} [${(slotItem as Item).rarity}]\n${slotItem.description}\n${this.formatStats((slotItem as Item).stats)}\n左键使用 / 右键出售或丢弃`
+            : `${slotItem.name}\n${(slotItem as Consumable).description}\n左键使用 / 右键出售或丢弃`;
           this.showInfo(desc);
         });
         bg.on('pointerout', () => this.showInfo(''));
+
+        // 左键：消耗品 → 使用；装备 → 穿戴
+        // 右键：弹出「出售/丢弃」菜单
+        bg.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+          if (pointer.rightButtonDown()) {
+            this.showItemContextMenu(pointer.x, pointer.y, i, slotItem);
+          } else {
+            // 左键
+            if (!('rarity' in slotItem)) {
+              void this.useCityConsumable(i, slotItem as Consumable);
+            } else {
+              void this.equipFromCity(i, slotItem as Item);
+            }
+          }
+        });
       }
     }
+  }
+
+  /**
+   * 主城使用消耗品：调 GameState.useConsumable 走后端权威，
+   * 成功后从本地 cityInventory 移除并刷新背包 UI。
+   * 注意：主城没有 Player 战斗状态，但仍可用药水（hp/mp 即时回血只对 RunState 生效；
+   * 主城使用通常用于查看/测试，因此这里允许调用，效果由后端处理）。
+   */
+  private async useCityConsumable(slotIndex: number, _consumable: Consumable) {
+    const state = GameState.getInstance();
+    this.showInfo('使用中...');
+    try {
+      const effect = await state.useConsumable(slotIndex);
+      if (effect) {
+        // 移除本地格子
+        state.save.cityInventory[slotIndex] = { item: null };
+        state.persist();
+        this.showInfo('使用成功');
+        this.closeBag();
+        await this.openBag();
+      } else {
+        this.showInfo('使用失败（可能离线）');
+      }
+    } catch (e: any) {
+      this.showInfo(e?.message || '使用失败');
+    }
+  }
+
+  /**
+   * 物品右键菜单：出售 / 丢弃
+   * - 出售：调 state.sellItem(playerItemId)，依赖 snapshot 暴露的 instanceId
+   * - 丢弃：调 InventorySystem.discardAsync(slot)
+   */
+  private contextMenuUI: Phaser.GameObjects.GameObject[] = [];
+
+  private closeContextMenu() {
+    for (const obj of this.contextMenuUI) {
+      if (obj.active) obj.destroy();
+    }
+    this.contextMenuUI = [];
+  }
+
+  private showItemContextMenu(x: number, y: number, slotIndex: number, slotItem: Item | Consumable) {
+    this.closeContextMenu();
+
+    const menuW = 100;
+    const menuH = 64;
+    const menuX = Math.min(x, this.cameras.main.width - menuW);
+    const menuY = Math.min(y, this.cameras.main.height - menuH);
+
+    const bg = this.add.rectangle(menuX, menuY, menuW, menuH, 0x0f172a, 0.95)
+      .setOrigin(0).setScrollFactor(0).setDepth(5000).setStrokeStyle(1, 0x475569);
+    this.contextMenuUI.push(bg);
+
+    const sellBtn = this.add.text(menuX + 8, menuY + 8, '出售', {
+      fontSize: '13px', color: '#fbbf24',
+    }).setScrollFactor(0).setDepth(5001).setInteractive({ useHandCursor: true })
+      .on('pointerdown', () => { this.closeContextMenu(); void this.sellSlotItem(slotIndex, slotItem); });
+    this.contextMenuUI.push(sellBtn);
+
+    const discardBtn = this.add.text(menuX + 8, menuY + 32, '丢弃', {
+      fontSize: '13px', color: '#ef4444',
+    }).setScrollFactor(0).setDepth(5001).setInteractive({ useHandCursor: true })
+      .on('pointerdown', () => { this.closeContextMenu(); void this.discardSlotItem(slotIndex); });
+    this.contextMenuUI.push(discardBtn);
+
+    // 点击其他位置关闭（延迟一帧注册，避免与右键 pointerdown 事件竞争）
+    this.time.delayedCall(0, () => {
+      const handler = (pointer: Phaser.Input.Pointer) => {
+        const inMenu = pointer.x >= menuX && pointer.x <= menuX + menuW &&
+          pointer.y >= menuY && pointer.y <= menuY + menuH;
+        if (!inMenu) {
+          this.closeContextMenu();
+        }
+        this.input.off('pointerdown', handler);
+      };
+      this.input.on('pointerdown', handler);
+    });
+  }
+
+  private async sellSlotItem(slotIndex: number, slotItem: Item | Consumable) {
+    const state = GameState.getInstance();
+    // 物品 PlayerItem.id 来自 snapshot 端点的 instanceId 字段
+    const playerItemId = (slotItem as any).instanceId as string | undefined;
+    if (!playerItemId) {
+      this.showInfo('该物品缺少服务器实例 ID，请打开背包刷新后重试');
+      return;
+    }
+
+    this.showInfo('出售中...');
+    try {
+      const result = await state.sellItem(playerItemId);
+      if (result) {
+        this.showInfo(`出售成功 +${result.goldGained}G`);
+        logSell({
+          itemName: slotItem.name,
+          itemId: slotItem.id,
+          itemRarity: (slotItem as any).rarity,
+          price: result.goldGained,
+          goldBefore: state.save.gold + result.goldGained,
+          goldAfter: state.save.gold,
+          location: 'city',
+        });
+        // 后端权威已扣 PlayerItem，前端 GameState.sellItem 已更新本地 cityInventory 与金币
+        this.closeBag();
+        await this.openBag();
+      } else {
+        this.showInfo('出售失败（离线或网络错误）');
+      }
+    } catch (e: any) {
+      this.showInfo(e?.message || '出售被拒绝');
+    }
+    // 标识未使用变量
+    void slotIndex;
+  }
+
+  /**
+   * 主城穿戴装备：从背包指定格子装备到对应部位。
+   * - 若目标部位已有装备，先卸下旧装备放回背包空位
+   * - 同步更新 cityEquipment / cityInventory，并调后端 equipItem
+   */
+  private async equipFromCity(slotIndex: number, item: Item) {
+    const state = GameState.getInstance();
+    const eq = new EquipmentSystem(state.save.cityEquipment);
+    const inv = new InventorySystem(state.save.cityInventory);
+
+    // 检查目标部位是否已有装备
+    const oldItem = eq.getSlot(item.slot);
+    if (oldItem) {
+      // 先卸下旧装备到背包空位
+      if (!inv.hasSpace()) {
+        this.showInfo('背包已满，无法更换装备');
+        return;
+      }
+      eq.unequip(item.slot);
+      inv.addItem(oldItem);
+    }
+
+    // 穿戴新装备
+    eq.equip(item);
+    inv.removeItem(slotIndex);
+
+    // 写回 GameState
+    state.save.cityEquipment = eq.equipment;
+    state.save.cityInventory = inv.slots;
+    state.persist();
+
+    logEquipChange({
+      operation: 'equip',
+      slot: item.slot,
+      itemName: item.name,
+      itemId: item.id,
+      itemRarity: item.rarity,
+      oldItemName: oldItem?.name,
+      oldItemId: oldItem?.id,
+      oldItemRarity: oldItem?.rarity,
+      location: 'city',
+    });
+
+    this.showInfo(`已装备 ${item.name}`);
+    this.closeBag();
+    await this.openBag();
+  }
+
+  /**
+   * 主城卸下装备：从指定部位卸下并放回背包空位。
+   */
+  private async unequipFromCity(slot: import('../types').ItemSlot) {
+    const state = GameState.getInstance();
+    const eq = new EquipmentSystem(state.save.cityEquipment);
+    const inv = new InventorySystem(state.save.cityInventory);
+
+    const oldItem = eq.getSlot(slot);
+    if (!oldItem) return;
+
+    if (!inv.hasSpace()) {
+      this.showInfo('背包已满，无法卸下');
+      return;
+    }
+
+    eq.unequip(slot);
+    inv.addItem(oldItem);
+
+    state.save.cityEquipment = eq.equipment;
+    state.save.cityInventory = inv.slots;
+    state.persist();
+
+    logEquipChange({
+      operation: 'unequip',
+      slot,
+      itemName: oldItem.name,
+      itemId: oldItem.id,
+      itemRarity: oldItem.rarity,
+      location: 'city',
+    });
+
+    this.showInfo(`已卸下 ${oldItem.name}`);
+    this.closeBag();
+    await this.openBag();
+  }
+
+  private async discardSlotItem(slotIndex: number) {
+    const state = GameState.getInstance();
+    const slotItem = state.save.cityInventory[slotIndex]?.item;
+    // 直接修改本地存档；后端 discard 端点为 fire-and-forget（PlayerItem 也会清掉）
+    const characterId = SaveManager.getCharacterId();
+    if (characterId && api.getToken() && !SaveManager.isOffline()) {
+      try {
+        await api.discardInventoryItem(characterId, { slot: slotIndex, count: 1 });
+      } catch (e) {
+        console.warn('[MainCityScene] discardInventoryItem 失败:', e);
+      }
+    }
+    state.save.cityInventory[slotIndex] = { item: null };
+    state.persist();
+    this.showInfo('已丢弃');
+    if (slotItem) {
+      logDiscard({
+        itemName: slotItem.name,
+        itemId: slotItem.id,
+        itemRarity: (slotItem as any).rarity,
+        location: 'city',
+      });
+    }
+    this.closeBag();
+    await this.openBag();
   }
 
   private showInfo(text: string) {

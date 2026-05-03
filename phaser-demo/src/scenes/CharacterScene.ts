@@ -52,7 +52,7 @@ export class CharacterScene extends Phaser.Scene {
       baseStats: { maxHp: number; maxMp: number; attack: number; defense: number; speed: number };
       equipmentBonus: { maxHp: number; maxMp: number; attack: number; defense: number; speed: number };
       finalStats: { maxHp: number; maxMp: number; attack: number; defense: number; speed: number };
-    };
+    } | null = null;
 
     const characterId = SaveManager.getCharacterId();
     if (characterId && api.getToken()) {
@@ -60,11 +60,19 @@ export class CharacterScene extends Phaser.Scene {
         const res = await api.getCharacterStats(characterId);
         stats = res.stats;
       } catch (e) {
-        console.warn('从服务器加载属性失败，回退本地计算:', e);
-        stats = this.calculateStatsLocally(cls, level, eq);
+        console.error('[CharacterScene] 从服务器加载属性失败:', e);
+        this.loadingText.setText('属性加载失败，请重试');
+        return;
       }
     } else {
-      stats = this.calculateStatsLocally(cls, level, eq);
+      // 未登录时直接显示基础提示
+      this.loadingText.setText('未登录，无法加载属性');
+      return;
+    }
+
+    if (!stats) {
+      this.loadingText.setText('属性加载失败');
+      return;
     }
 
     this.loadingText.destroy();
@@ -100,45 +108,26 @@ export class CharacterScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true })
       .on('pointerover', () => backBtn.setStyle({ backgroundColor: '#64748b' }))
       .on('pointerout', () => backBtn.setStyle({ backgroundColor: '#475569' }))
-      .on('pointerdown', () => this.scene.start(returnScene));
+      .on('pointerdown', () => this.closeScene());
 
     this.uiObjects.push(backBtn);
 
     this.input.keyboard!.on('keydown-ESC', () => {
-      this.scene.start(returnScene);
+      this.closeScene();
     });
     this.input.keyboard!.on('keydown-C', () => {
-      this.scene.start(returnScene);
+      this.closeScene();
     });
   }
 
-  private calculateStatsLocally(cls: typeof CLASSES[0], level: number, eq: EquipmentSystem) {
-    const eqBonus = eq.getTotalStats();
-    const multiplier = 1 + (level - 1) * 0.05;
-    const base = {
-      maxHp: Math.floor(cls.baseStats.maxHp * multiplier),
-      maxMp: Math.floor(cls.baseStats.maxMp * multiplier),
-      attack: Math.floor(cls.baseStats.attack * multiplier),
-      defense: Math.floor(cls.baseStats.defense * multiplier),
-      speed: Math.floor(cls.baseStats.speed * multiplier),
-    };
-    return {
-      baseStats: base,
-      equipmentBonus: {
-        maxHp: eqBonus.maxHp ?? 0,
-        maxMp: eqBonus.maxMp ?? 0,
-        attack: eqBonus.attack ?? 0,
-        defense: eqBonus.defense ?? 0,
-        speed: eqBonus.speed ?? 0,
-      },
-      finalStats: {
-        maxHp: base.maxHp + (eqBonus.maxHp ?? 0),
-        maxMp: base.maxMp + (eqBonus.maxMp ?? 0),
-        attack: base.attack + (eqBonus.attack ?? 0),
-        defense: base.defense + (eqBonus.defense ?? 0),
-        speed: base.speed + (eqBonus.speed ?? 0),
-      },
-    };
+  private closeScene() {
+    this.input.keyboard?.off('keydown-ESC');
+    this.input.keyboard?.off('keydown-C');
+    this.uiObjects.forEach((obj) => {
+      if (obj.active) obj.destroy();
+    });
+    this.uiObjects = [];
+    this.scene.stop();
   }
 
   private renderProfile(x: number, y: number, className: string, level: number, exp: number) {

@@ -110,6 +110,21 @@ export interface GameSave {
   level: number;
   exp: number;
   skillLevels: Record<string, number>;
+  skillPoints: number;
+}
+
+export interface DamageSourceStat {
+  id: string;
+  name: string;
+  color: number;
+  castCount: number;
+  totalDamage: number;
+}
+
+export interface RunDamageStats {
+  totalDamage: number;
+  sources: Record<string, DamageSourceStat>;
+  version: number;
 }
 
 export interface RunState {
@@ -122,4 +137,5 @@ export interface RunState {
   elapsedTime: number;
   enemiesKilled: number;
   itemsFound: string[];
+  damageStats: RunDamageStats;
 }

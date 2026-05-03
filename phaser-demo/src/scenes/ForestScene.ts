@@ -18,7 +18,11 @@ import {
   logDeath,
   logExtract,
   logGoDeeper,
+  logLevelUp,
 } from '../utils/AuditLogger';
+import { recordDamage, recordCast } from '../utils/DamageTracker';
+import { DamageBar } from '../components/DamageBar';
+import { DamageDetailPanel } from '../components/DamageDetailPanel';
 import type { Item, EnemyType } from '../types';
 
 export class ForestScene extends Phaser.Scene {
@@ -46,6 +50,8 @@ export class ForestScene extends Phaser.Scene {
   private expBg!: Phaser.GameObjects.Rectangle;
   private levelText!: Phaser.GameObjects.Text;
   private lastLevel = 1;
+  private currentVisionRadius = 640;
+  private currentFogOpacity = 0;
 
   // 掉落物（装备 / 即时生效药水）
   private drops: { container: Phaser.GameObjects.Container; item?: Item; effect?: 'hp' | 'mp' }[] = [];
@@ -61,6 +67,9 @@ export class ForestScene extends Phaser.Scene {
     range: number;
     traveled: number;
     aoeRange: number;
+    skillId?: string;
+    skillName?: string;
+    skillColor?: number;
   }[] = [];
 
   // 法力流溢光球
@@ -96,6 +105,11 @@ export class ForestScene extends Phaser.Scene {
   // 传送门菜单 UI
   private portalMenuUI: Phaser.GameObjects.GameObject[] = [];
 
+  // 伤害统计 UI
+  private damageBar!: DamageBar;
+  private damagePanel!: DamageDetailPanel;
+  private lastDamageUpdate = 0;
+
   private getMouseWorldPoint(): { x: number; y: number } {
     const pointer = this.input.activePointer;
     return this.cameras.main.getWorldPoint(pointer.x, pointer.y);
@@ -112,22 +126,28 @@ export class ForestScene extends Phaser.Scene {
       return;
     }
 
+    this.deathHandled = false;
+
+    this.setupInput();
+
     this.runInventory = new InventorySystem(state.run.runInventory);
     this.runEquipment = new EquipmentSystem(state.run.runEquipment);
 
     this.createGround();
     this.createTrees();
     this.createPlayer();
-    await this.applyEquipmentStats();
-    this.loadAndCreateEnemies().catch(() => {});
-    this.createPortal();
-    this.createHUD();
-    this.setupInput();
-
-    this.lastLevel = state.save.level;
 
     this.fogSystem = new FogSystem(this);
     this.fogSystem.create();
+    this.fogSystem.update(this.player.container.x, this.player.container.y, 640, 0);
+    this.createHUD();
+    this.createDamageUI();
+
+    await this.applyEquipmentStats();
+    this.loadAndCreateEnemies().catch(() => {});
+    this.createPortal();
+
+    this.lastLevel = state.save.level;
 
     // 相机
     this.cameras.main.startFollow(this.player.container, true, 0.1, 0.1);
@@ -230,6 +250,21 @@ export class ForestScene extends Phaser.Scene {
   }
 
   private spawnEnemies() {
+    const state = GameState.getInstance();
+    const serverSpawns = state.runSpawns;
+
+    // 优先使用后端权威 spawns（每个点指定怪物模板与坐标）
+    if (serverSpawns && serverSpawns.length > 0 && !SaveManager.isOffline()) {
+      for (const sp of serverSpawns) {
+        const config = this.enemyTemplates.find((t) => t.id === sp.enemyTemplateId);
+        if (!config) continue;
+        const enemy = new Enemy(this, sp.x, sp.y, config);
+        this.enemies.push(enemy);
+      }
+      return;
+    }
+
+    // 离线或后端未返回 spawns：本地随机
     const count = Phaser.Math.Between(GAME_CONFIG.enemySpawnCount.min, GAME_CONFIG.enemySpawnCount.max);
     for (let i = 0; i < count; i++) {
       const x = Phaser.Math.Between(100, GAME_CONFIG.worldWidth - 100);
@@ -244,8 +279,17 @@ export class ForestScene extends Phaser.Scene {
   }
 
   private createPortal() {
-    const x = Phaser.Math.Between(200, GAME_CONFIG.worldWidth - 200);
-    const y = Phaser.Math.Between(200, GAME_CONFIG.worldHeight - 200);
+    // 优先使用后端 startRun 返回的传送门位置；离线则随机生成
+    const state = GameState.getInstance();
+    let x: number;
+    let y: number;
+    if (state.runPortal && !SaveManager.isOffline()) {
+      x = state.runPortal.x;
+      y = state.runPortal.y;
+    } else {
+      x = Phaser.Math.Between(200, GAME_CONFIG.worldWidth - 200);
+      y = Phaser.Math.Between(200, GAME_CONFIG.worldHeight - 200);
+    }
     this.portal = this.add.container(x, y);
 
     const glow = this.add.ellipse(0, 0, 60, 60, 0x3b82f6, 0.3);
@@ -264,6 +308,20 @@ export class ForestScene extends Phaser.Scene {
       yoyo: true,
       repeat: -1,
     });
+  }
+
+  private createDamageUI() {
+    this.damageBar = new DamageBar(this, 1, (expanded) => {
+      if (expanded) {
+        const state = GameState.getInstance();
+        if (state.run) {
+          this.damagePanel.show(state.run.damageStats);
+        }
+      } else {
+        this.damagePanel.hide();
+      }
+    });
+    this.damagePanel = new DamageDetailPanel(this);
   }
 
   private createHUD() {
@@ -482,9 +540,9 @@ export class ForestScene extends Phaser.Scene {
 
   private errorText?: Phaser.GameObjects.Text;
 
-  update(_time: number, delta: number) {
+  update(time: number, delta: number) {
     try {
-      if (!this.player) return;
+      if (!this.player || !this.fogSystem) return;
 
       const state = GameState.getInstance();
       if (!state.run) return;
@@ -512,11 +570,14 @@ export class ForestScene extends Phaser.Scene {
       this.handleCharacterPage();
       this.handleBestiaryPage();
       this.handlePortal();
+      this.updateFog(delta);
       this.updateProjectiles(delta);
       this.updateLightOrbs(delta);
       this.updateEnemies(delta);
-      this.updateFog(delta);
       this.updateHUD();
+      this.updateDamageBarPosition();
+      this.updateDamageUI(time);
+      this.checkDamagePanelClose();
       this.checkDeath();
     } catch (err: any) {
       if (!this.errorText) {
@@ -548,12 +609,20 @@ export class ForestScene extends Phaser.Scene {
       this.player.attackCooldown = this.player.getAttackInterval();
 
       const cls = this.player.getClassType();
+      let hitAny = false;
       if (cls === 'mage') {
-        this.mageAttack();
+        hitAny = this.mageAttack();
       } else if (cls === 'warrior') {
-        this.warriorAttack();
+        hitAny = this.warriorAttack();
       } else if (cls === 'sage') {
-        this.sageAttack();
+        hitAny = this.sageAttack();
+      }
+
+      if (hitAny) {
+        const run = GameState.getInstance().run;
+        if (run) {
+          run.damageStats = recordCast(run.damageStats, 'attack_normal', '普通攻击', 0xe5e7eb);
+        }
       }
 
       // 法力流溢：普通攻击附带追踪光球
@@ -569,7 +638,7 @@ export class ForestScene extends Phaser.Scene {
     }
   }
 
-  private mageAttack() {
+  private mageAttack(): boolean {
     const px = this.player.container.x;
     const py = this.player.container.y;
     const angle = this.player.getFacingAngle();
@@ -594,9 +663,23 @@ export class ForestScene extends Phaser.Scene {
       traveled: 0,
       aoeRange: 35,
     });
+
+    // 法师扇形命中检测（用于返回是否命中）
+    const halfCone = Math.PI / 6;
+    const range = 250;
+    for (const enemy of this.enemies) {
+      if (!enemy || enemy.isDead() || !enemy.container?.active) continue;
+      const dist = Phaser.Math.Distance.Between(px, py, enemy.container.x, enemy.container.y);
+      if (dist > range) continue;
+      const angleToEnemy = Phaser.Math.Angle.Between(px, py, enemy.container.x, enemy.container.y);
+      let angleDiff = Math.abs(Phaser.Math.Angle.Wrap(angleToEnemy - angle));
+      if (angleDiff > Math.PI) angleDiff = Math.PI * 2 - angleDiff;
+      if (angleDiff <= halfCone) return true;
+    }
+    return false;
   }
 
-  private warriorAttack() {
+  private warriorAttack(): boolean {
     const px = this.player.container.x;
     const py = this.player.container.y;
     const angle = this.player.getFacingAngle();
@@ -617,6 +700,7 @@ export class ForestScene extends Phaser.Scene {
       onComplete: () => arc.destroy(),
     });
 
+    let hitAny = false;
     // 扇形内伤害判定
     for (const enemy of this.enemies) {
       if (!enemy || enemy.isDead() || !enemy.container?.active) continue;
@@ -626,7 +710,12 @@ export class ForestScene extends Phaser.Scene {
       let angleDiff = Math.abs(Phaser.Math.Angle.Wrap(angleToEnemy - angle));
       if (angleDiff > Math.PI) angleDiff = Math.PI * 2 - angleDiff;
       if (angleDiff <= halfCone) {
+        hitAny = true;
         enemy.takeDamage(dmg);
+        const run = GameState.getInstance().run;
+        if (run) {
+          run.damageStats = recordDamage(run.damageStats, 'attack_normal', '普通攻击', 0xe5e7eb, dmg);
+        }
         if (!enemy.isDead()) {
           enemy.knockBack(px, py);
         } else {
@@ -634,9 +723,10 @@ export class ForestScene extends Phaser.Scene {
         }
       }
     }
+    return hitAny;
   }
 
-  private sageAttack() {
+  private sageAttack(): boolean {
     const px = this.player.container.x;
     const py = this.player.container.y;
     const range = 200;
@@ -653,7 +743,7 @@ export class ForestScene extends Phaser.Scene {
       .slice(0, 3)
       .map((t) => t.enemy);
 
-    if (targets.length === 0) return;
+    if (targets.length === 0) return false;
 
     for (const enemy of targets) {
       const container = this.add.container(px, py);
@@ -680,6 +770,7 @@ export class ForestScene extends Phaser.Scene {
         onComplete: () => flash.destroy(),
       });
     }
+    return true;
   }
 
   private spawnLightOrb() {
@@ -746,6 +837,10 @@ export class ForestScene extends Phaser.Scene {
       const dist = Phaser.Math.Distance.Between(orb.container.x, orb.container.y, target.container.x, target.container.y);
       if (dist < 15) {
         target.takeDamage(orb.damage);
+        const run = GameState.getInstance().run;
+        if (run) {
+          run.damageStats = recordDamage(run.damageStats, 'attack_normal', '普通攻击', 0xe5e7eb, orb.damage);
+        }
         if (target.isDead()) {
           this.handleEnemyDeath(target);
         }
@@ -842,12 +937,13 @@ export class ForestScene extends Phaser.Scene {
     const hotkeys = ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE'];
     for (let i = 0; i < hotkeys.length; i++) {
       if (Phaser.Input.Keyboard.JustDown(this.keys[hotkeys[i]])) {
-        this.useConsumableAtIndex(i);
+        // 异步处理；update() 不阻塞
+        void this.useConsumableAtIndex(i);
       }
     }
   }
 
-  private useConsumableAtIndex(index: number) {
+  private async useConsumableAtIndex(index: number) {
     const slot = this.runInventory.slots[index];
     const item = slot?.item;
     if (!item) {
@@ -860,20 +956,58 @@ export class ForestScene extends Phaser.Scene {
     }
 
     const consumable = item as import('../types').Consumable;
-    const applied = this.player.applyConsumableEffect(consumable);
-    if (!applied) {
-      if (consumable.type === 'instantHp' || consumable.type === 'slowHp') {
-        this.showFloatingText(this.player.container.x, this.player.container.y - 20, '生命已满', 0xef4444);
-      } else if (consumable.type === 'instantMp' || consumable.type === 'slowMp') {
-        this.showFloatingText(this.player.container.x, this.player.container.y - 20, '法力已满', 0xef4444);
-      }
+    const px = this.player.container.x;
+    const py = this.player.container.y;
+
+    // 客户端预检：满血/满魔时拒绝（避免浪费一次网络往返）
+    if ((consumable.type === 'instantHp' || consumable.type === 'slowHp') && this.player.hp >= this.player.maxHp) {
+      this.showFloatingText(px, py - 20, '生命已满', 0xef4444);
+      return;
+    }
+    if ((consumable.type === 'instantMp' || consumable.type === 'slowMp') && this.player.mp >= this.player.maxMp) {
+      this.showFloatingText(px, py - 20, '法力已满', 0xef4444);
       return;
     }
 
+    const state = GameState.getInstance();
+
+    // 离线模式直接跳过 API 调用
+    if (SaveManager.isOffline()) {
+      this.showFloatingText(px, py - 20, '离线模式无法使用消耗品', 0xef4444);
+      return;
+    }
+
+    try {
+      const effect = await state.useConsumable(index);
+      if (!effect) {
+        this.showFloatingText(px, py - 20, '使用失败', 0xef4444);
+        return;
+      }
+
+      // 即时效果
+      if (typeof effect.hp === 'number' && effect.hp > 0) {
+        this.player.heal(effect.hp);
+      }
+      if (typeof effect.mp === 'number' && effect.mp > 0) {
+        this.player.restoreMp(effect.mp);
+      }
+
+      // Buff 效果：后端返回完整 buffs 数组，遍历应用
+      if (Array.isArray(effect.buffs) && effect.buffs.length > 0) {
+        for (const buff of effect.buffs) {
+          this.player.applyConsumableEffect(buff as import('../entities/Player').UseItemBuff);
+        }
+      }
+    } catch (e) {
+      console.error('[ForestScene] useConsumable 后端调用失败:', e);
+      this.showFloatingText(px, py - 20, '使用失败（服务器错误）', 0xef4444);
+      return;
+    }
+
+    // 移除背包格（后端在 useItem 端点中也会从 PlayerItem 删除该消耗品，
+    // 双写不一致由 SaveManager.save() 整包同步兜底）
     this.runInventory.removeItem(index);
 
-    const px = this.player.container.x;
-    const py = this.player.container.y;
     this.showFloatingText(px, py - 20, `使用 ${consumable.name}`, 0x22c55e);
 
     logConsumableUse({
@@ -897,6 +1031,13 @@ export class ForestScene extends Phaser.Scene {
   }
 
   private castSkillEffect(skill: import('../types').Skill, targetX: number, targetY: number, chargeRatio: number = 0) {
+    // 记录技能释放次数
+    const run = GameState.getInstance().run;
+    const skillColor = this.getSkillColor(skill.id);
+    if (run) {
+      run.damageStats = recordCast(run.damageStats, skill.id, skill.name, skillColor);
+    }
+
     const px = this.player.container.x;
     const py = this.player.container.y;
 
@@ -916,11 +1057,15 @@ export class ForestScene extends Phaser.Scene {
     if (skill.id === 'curse') {
       // 衰弱诅咒：AOE 伤害并降低攻击（简化：AOE 伤害）
       const range = skill.range ?? 100;
+      const dmg = skill.damage ?? 15;
       for (const enemy of this.enemies) {
         if (!enemy || enemy.isDead() || !enemy.container?.active) continue;
         const dist = Phaser.Math.Distance.Between(px, py, enemy.container.x, enemy.container.y);
         if (dist <= range) {
-          enemy.takeDamage(skill.damage ?? 15);
+          enemy.takeDamage(dmg);
+          if (run) {
+            run.damageStats = recordDamage(run.damageStats, skill.id, skill.name, skillColor, dmg);
+          }
           if (enemy.isDead()) {
             this.handleEnemyDeath(enemy);
           }
@@ -959,6 +1104,7 @@ export class ForestScene extends Phaser.Scene {
       // 星落：陨星从天而降
       const range = skill.range ?? 120;
       const damage = Math.floor(this.player.attack * ((skill.damagePercent ?? 500) / 100));
+      const meteorSkillColor = this.getSkillColor('meteor');
 
       // 预警圈
       const warning = this.add.ellipse(targetX, targetY, range * 2, range * 2, 0xff4500, 0.25);
@@ -990,6 +1136,10 @@ export class ForestScene extends Phaser.Scene {
             const dist = Phaser.Math.Distance.Between(targetX, targetY, enemy.container.x, enemy.container.y);
             if (dist <= range) {
               enemy.takeDamage(damage);
+              const run2 = GameState.getInstance().run;
+              if (run2) {
+                run2.damageStats = recordDamage(run2.damageStats, 'meteor', '陨石术', meteorSkillColor, damage);
+              }
               if (enemy.isDead()) {
                 this.handleEnemyDeath(enemy);
               }
@@ -1027,6 +1177,7 @@ export class ForestScene extends Phaser.Scene {
       const basePercent = skill.damagePercent ?? 200;
       const damage = Math.floor(this.player.attack * (basePercent / 100) * (1 + chargeRatio));
       const aoeRange = 60 + chargeRatio * 80;
+      const fireballSkillColor = this.getSkillColor('fireball');
 
       const container = this.add.container(px, py);
       const glow = this.add.ellipse(0, 0, 28 * scale, 28 * scale, 0xf97316, 0.35);
@@ -1045,6 +1196,9 @@ export class ForestScene extends Phaser.Scene {
         range: skill.range ?? 200,
         traveled: 0,
         aoeRange,
+        skillId: skill.id,
+        skillName: skill.name,
+        skillColor: fireballSkillColor,
       });
       return;
     }
@@ -1060,6 +1214,9 @@ export class ForestScene extends Phaser.Scene {
         const dist = Phaser.Math.Distance.Between(targetX, targetY, enemy.container.x, enemy.container.y);
         if (dist <= range) {
           enemy.takeDamage(dmg);
+          if (run) {
+            run.damageStats = recordDamage(run.damageStats, skill.id, skill.name, skillColor, dmg);
+          }
           if (enemy.isDead()) {
             this.handleEnemyDeath(enemy);
           }
@@ -1088,6 +1245,9 @@ export class ForestScene extends Phaser.Scene {
       }
       if (nearest) {
         nearest.takeDamage(dmg);
+        if (run) {
+          run.damageStats = recordDamage(run.damageStats, skill.id, skill.name, skillColor, dmg);
+        }
         if (nearest.isDead()) {
           this.handleEnemyDeath(nearest);
         }
@@ -1148,6 +1308,13 @@ export class ForestScene extends Phaser.Scene {
           ? proj.directHitDamage
           : (proj.splashDamage ?? proj.damage);
         enemy.takeDamage(dmg);
+        const run = GameState.getInstance().run;
+        if (run) {
+          const sid = proj.skillId ?? 'attack_normal';
+          const sname = proj.skillName ?? '普通攻击';
+          const scolor = proj.skillColor ?? 0xe5e7eb;
+          run.damageStats = recordDamage(run.damageStats, sid, sname, scolor, dmg);
+        }
         if (enemy.isDead()) {
           this.handleEnemyDeath(enemy);
         }
@@ -1192,19 +1359,19 @@ export class ForestScene extends Phaser.Scene {
 
   private handleSkillPage() {
     if (Phaser.Input.Keyboard.JustDown(this.keys.N)) {
-      this.scene.start('SkillScene');
+      this.scene.run('SkillScene');
     }
   }
 
   private handleCharacterPage() {
     if (Phaser.Input.Keyboard.JustDown(this.keys.C)) {
-      this.scene.start('CharacterScene');
+      this.scene.run('CharacterScene');
     }
   }
 
   private handleBestiaryPage() {
     if (Phaser.Input.Keyboard.JustDown(this.keys.V)) {
-      this.scene.start('BestiaryScene');
+      this.scene.run('BestiaryScene');
     }
   }
 
@@ -1466,65 +1633,36 @@ export class ForestScene extends Phaser.Scene {
 
   private async applyEquipmentStats() {
     const state = GameState.getInstance();
-    const bonus = this.runEquipment.getTotalStats();
-
-    let maxHp: number;
-    let maxMp: number;
-    let attack: number;
-    let defense: number;
-    let speed: number;
-
     const characterId = SaveManager.getCharacterId();
-    if (characterId && api.getToken()) {
-      try {
-        const eqData: Record<string, any | null> = {};
-        for (const [slot, item] of Object.entries(this.runEquipment.equipment)) {
-          eqData[slot] = item;
-        }
-        const res = await api.calculateCharacterStats(characterId, eqData);
-        const fs = res.stats.finalStats;
-        maxHp = fs.maxHp;
-        maxMp = fs.maxMp;
-        attack = fs.attack;
-        defense = fs.defense;
-        speed = fs.speed;
-      } catch (e) {
-        console.warn('从服务器计算属性失败，回退本地:', e);
-        const local = this.calculateStatsLocally(state, bonus);
-        maxHp = local.maxHp;
-        maxMp = local.maxMp;
-        attack = local.attack;
-        defense = local.defense;
-        speed = local.speed;
-      }
-    } else {
-      const local = this.calculateStatsLocally(state, bonus);
-      maxHp = local.maxHp;
-      maxMp = local.maxMp;
-      attack = local.attack;
-      defense = local.defense;
-      speed = local.speed;
+
+    // 未登录状态直接跳过属性计算（保持默认）
+    if (!characterId || !api.getToken()) {
+      return;
     }
 
-    this.player.maxHp = maxHp;
-    this.player.hp = Math.min(this.player.hp, this.player.maxHp);
-    this.player.maxMp = maxMp;
-    this.player.mp = Math.min(this.player.mp, this.player.maxMp);
-    this.player.attack = attack;
-    this.player.defense = defense;
-    this.player.speed = speed;
-  }
-
-  private calculateStatsLocally(state: ReturnType<typeof GameState.getInstance>, bonus: ReturnType<EquipmentSystem['getTotalStats']>) {
-    const cls = CLASSES.find((c) => c.id === state.save.selectedClass);
-    const levelMultiplier = 1 + (state.save.level - 1) * 0.05;
-    return {
-      maxHp: Math.floor((cls?.baseStats.maxHp ?? 100) * levelMultiplier) + (bonus.maxHp ?? 0),
-      maxMp: Math.floor((cls?.baseStats.maxMp ?? 50) * levelMultiplier) + (bonus.mp ?? 0),
-      attack: Math.floor((cls?.baseStats.attack ?? 10) * levelMultiplier) + (bonus.attack ?? 0),
-      defense: Math.floor((cls?.baseStats.defense ?? 5) * levelMultiplier) + (bonus.defense ?? 0),
-      speed: Math.floor((cls?.baseStats.speed ?? 150) * levelMultiplier) + (bonus.speed ?? 0),
-    };
+    try {
+      const eqData: Record<string, any | null> = {};
+      for (const [slot, item] of Object.entries(this.runEquipment.equipment)) {
+        eqData[slot] = item;
+      }
+      const res = await api.calculateCharacterStats(characterId, eqData);
+      const fs = res.stats.finalStats;
+      this.player.maxHp = fs.maxHp;
+      this.player.hp = Math.min(this.player.hp, this.player.maxHp);
+      this.player.maxMp = fs.maxMp;
+      this.player.mp = Math.min(this.player.mp, this.player.maxMp);
+      this.player.attack = fs.attack;
+      this.player.defense = fs.defense;
+      this.player.speed = fs.speed;
+    } catch (e) {
+      console.error('[ForestScene] 从服务器计算属性失败，保持当前属性不变:', e);
+      this.showFloatingText(
+        this.player.container.x,
+        this.player.container.y - 30,
+        '属性同步失败',
+        0xef4444
+      );
+    }
   }
 
   private showBagInfo(text: string) {
@@ -1565,7 +1703,7 @@ export class ForestScene extends Phaser.Scene {
       backgroundColor: '#16a34a',
       padding: { x: 16, y: 8 },
     }).setOrigin(0.5).setScrollFactor(0).setDepth(3002).setInteractive({ useHandCursor: true })
-      .on('pointerdown', () => this.extract());
+      .on('pointerdown', () => { void this.extract(); });
 
     const deeperBtn = this.add.text(cx, cy + 50, '深入下一层', {
       fontSize: '18px',
@@ -1573,7 +1711,7 @@ export class ForestScene extends Phaser.Scene {
       backgroundColor: '#dc2626',
       padding: { x: 16, y: 8 },
     }).setOrigin(0.5).setScrollFactor(0).setDepth(3002).setInteractive({ useHandCursor: true })
-      .on('pointerdown', () => this.goDeeper());
+      .on('pointerdown', () => { void this.goDeeper(); });
 
     this.portalMenuUI.push(overlay, panel, title, extractBtn, deeperBtn);
 
@@ -1589,46 +1727,154 @@ export class ForestScene extends Phaser.Scene {
     this.portalMenuUI = [];
   }
 
-  private extract() {
-    this.closePortalMenu();
-    const state = GameState.getInstance();
-    if (state.run) {
-      const itemsCarried = this.runInventory.slots.filter((s) => s.item !== null).length;
-      logExtract({
-        depth: state.run.forestDepth,
-        enemiesKilled: state.run.enemiesKilled,
-        elapsedTimeSec: Math.floor(state.run.elapsedTime / 1000),
-        itemsCarried,
-      });
-      state.extractRun();
-      this.scene.start('GameOverScene', {
-        survived: true,
-        depth: state.run?.forestDepth ?? 1,
-        kills: state.run?.enemiesKilled ?? 0,
-        items: state.run?.itemsFound ?? [],
-      });
+  private getSkillColor(skillId: string): number {
+    for (const cls of CLASSES) {
+      const skill = cls.skills.find((s) => s.id === skillId);
+      if (skill && (skill as any).color) return (skill as any).color as number;
+    }
+    switch (skillId) {
+      case 'fireball': return 0xff4500;
+      case 'meteor': return 0xffd700;
+      case 'slash': return 0xc0c0c0;
+      case 'whirlwind': return 0x4ade80;
+      case 'heal': return 0x4ade80;
+      case 'curse': return 0xa855f7;
+      case 'manaOverflow': return 0x22d3ee;
+      default: return 0xe5e7eb;
     }
   }
 
-  private goDeeper() {
+  private updateDamageBarPosition() {
+    if (!this.damageBar) return;
+    const cam = this.cameras.main;
+    // 将屏幕坐标 (右上角内 40px) 转换为世界坐标，不使用 setScrollFactor(0)
+    const topRight = cam.getWorldPoint(cam.width - 40, 40);
+    this.damageBar.container.setPosition(topRight.x, topRight.y);
+
+    // 同步更新 DamageDetailPanel 位置到屏幕中央
+    if (this.damagePanel) {
+      const center = cam.getWorldPoint(cam.width / 2, cam.height / 2);
+      this.damagePanel.setPosition(center.x - 100, center.y - 160);
+    }
+  }
+
+  private updateDamageUI(time: number) {
+    if (time - this.lastDamageUpdate < 1000) return;
+    this.lastDamageUpdate = time;
+    const state = GameState.getInstance();
+    if (state.run && this.damageBar) {
+      this.damageBar.update(state.run.damageStats.totalDamage);
+      if (this.damagePanel && this.damagePanel.isVisible()) {
+        this.damagePanel.show(state.run.damageStats);
+      }
+    }
+  }
+
+  private checkDamagePanelClose() {
+    const pointer = this.input.activePointer;
+    if (pointer.isDown && this.damagePanel && this.damagePanel.isVisible()) {
+      // 检查点击位置是否在面板外部
+      const bounds = this.damagePanel.getBounds();
+      if (pointer.x < bounds.x || pointer.x > bounds.x + bounds.width || pointer.y < bounds.y || pointer.y > bounds.y + bounds.height) {
+        this.damagePanel.hide();
+        this.damageBar.setExpanded(false);
+      }
+    }
+  }
+
+  private async extract() {
     this.closePortalMenu();
     const state = GameState.getInstance();
-    if (state.run) {
-      const fromDepth = state.run.forestDepth;
-      state.run.forestDepth++;
-      logGoDeeper({
-        fromDepth,
-        toDepth: state.run.forestDepth,
-        enemiesKilledSoFar: state.run.enemiesKilled,
-      });
-      // 重新生成敌人，保留当前状态
-      this.enemies.forEach((e) => e.destroy());
-      this.enemies = [];
-      this.drops.forEach((d) => d.container.destroy());
-      this.drops = [];
-      this.loadAndCreateEnemies().catch(() => {});
+    if (!state.run) return;
 
-      // 移动传送门
+    const itemsCarried = this.runInventory.slots.filter((s) => s.item !== null).length;
+    const depth = state.run.forestDepth;
+    const enemiesKilled = state.run.enemiesKilled;
+    const elapsedTimeSec = Math.floor(state.run.elapsedTime / 1000);
+    const itemsFound = [...state.run.itemsFound];
+
+    logExtract({
+      depth,
+      enemiesKilled,
+      elapsedTimeSec,
+      itemsCarried,
+    });
+
+    // 锁屏提示，等待后端确认
+    const overlay = this.add.rectangle(
+      this.cameras.main.width / 2, this.cameras.main.height / 2,
+      this.cameras.main.width, this.cameras.main.height,
+      0x000000, 0.5
+    ).setScrollFactor(0).setDepth(5000);
+    const loadingText = this.add.text(
+      this.cameras.main.width / 2, this.cameras.main.height / 2,
+      '撤离中...', { fontSize: '20px', color: '#ffffff' }
+    ).setOrigin(0.5).setScrollFactor(0).setDepth(5001);
+
+    try {
+      await state.extractRun();
+    } catch (e) {
+      console.warn('[ForestScene] extract 异常:', e);
+    } finally {
+      overlay.destroy();
+      loadingText.destroy();
+    }
+
+    this.damageBar?.destroy();
+    this.damagePanel?.destroy();
+
+    this.scene.start('GameOverScene', {
+      survived: true,
+      depth,
+      kills: enemiesKilled,
+      items: itemsFound,
+    });
+  }
+
+  private async goDeeper() {
+    this.closePortalMenu();
+    const state = GameState.getInstance();
+    if (!state.run) return;
+
+    const fromDepth = state.run.forestDepth;
+
+    // 锁屏提示
+    const overlay = this.add.rectangle(
+      this.cameras.main.width / 2, this.cameras.main.height / 2,
+      this.cameras.main.width, this.cameras.main.height,
+      0x000000, 0.5
+    ).setScrollFactor(0).setDepth(5000);
+    const loadingText = this.add.text(
+      this.cameras.main.width / 2, this.cameras.main.height / 2,
+      '深入下一层...', { fontSize: '20px', color: '#ffffff' }
+    ).setOrigin(0.5).setScrollFactor(0).setDepth(5001);
+
+    try {
+      await state.descendRun();
+    } catch (e) {
+      console.warn('[ForestScene] descend 异常:', e);
+    } finally {
+      overlay.destroy();
+      loadingText.destroy();
+    }
+
+    logGoDeeper({
+      fromDepth,
+      toDepth: state.run.forestDepth,
+      enemiesKilledSoFar: state.run.enemiesKilled,
+    });
+
+    // 重新生成敌人，保留当前状态
+    this.enemies.forEach((e) => e.destroy());
+    this.enemies = [];
+    this.drops.forEach((d) => d.container.destroy());
+    this.drops = [];
+    void this.loadAndCreateEnemies();
+
+    // 移动传送门：优先用后端返回的新坐标
+    if (state.runPortal && !SaveManager.isOffline()) {
+      this.portal.setPosition(state.runPortal.x, state.runPortal.y);
+    } else {
       this.portal.setPosition(
         Phaser.Math.Between(200, GAME_CONFIG.worldWidth - 200),
         Phaser.Math.Between(200, GAME_CONFIG.worldHeight - 200)
@@ -1639,16 +1885,97 @@ export class ForestScene extends Phaser.Scene {
   private handleEnemyDeath(enemy: Enemy) {
     const state = GameState.getInstance();
     const enemyConfig = enemy.container.getData('config');
-    state.recordKill(enemyConfig.id);
     const depth = state.run?.forestDepth ?? 1;
+    const enemyX = enemy.container.x;
+    const enemyY = enemy.container.y;
 
-    // 原有掉落表
-    const table = enemy.getDropTable();
+    // 立即销毁敌人 + 从数组中移除
+    enemy.destroy();
+    this.enemies = this.enemies.filter((e) => e !== enemy);
+
+    // 调后端权威：经验 + 图鉴 + 掉落（fire-and-forget，不阻塞游戏循环）
+    void this.processKillReward(enemyConfig, enemyX, enemyY, depth);
+  }
+
+  /**
+   * 异步处理击杀奖励：
+   * 在线模式：调 state.recordKill → 用 newItems 渲染掉落物（PlayerItem 已由后端创建）
+   * 离线模式：走本地公式 + 本地 dropTable（GameState.recordKill 内部已处理经验回退）
+   *
+   * 注意：后端 reportKill 已经把 PlayerItem 写入 DB（runId=runId），
+   * 同时把 (Item|Consumable) 形态推到了 RunState.runInventory（GameState 内已处理）。
+   * 这里我们只需要把它们以「地面掉落物」形式可视化，玩家走过去即触发拾取（拾取时不再调 API，
+   * 因为 PlayerItem 已存在）。为了避免重复写入，我们只在「客户端预测：背包未加入」时才生成 drop。
+   *
+   * 实现策略：先记录调用前 runInventory 的快照，调用后对比是否有新增 → 视新增物品为掉落物，
+   * 但 GameState.recordKill 已经把它们直接放进了 runInventory，因此为了保持「掉地上需要拾取」的体验，
+   * 我们这里采用方案 A 的轻量版：把 newItems 从 runInventory 取出来重新放到地上等玩家拾取。
+   */
+  private async processKillReward(
+    enemyConfig: any,
+    enemyX: number,
+    enemyY: number,
+    depth: number
+  ) {
+    const state = GameState.getInstance();
+    const offline = SaveManager.isOffline();
+    const runId = state.runId;
+
+    // 如果没有有效的 runId，强制走离线分支（避免后端 400）
+    if (!offline && !runId) {
+      console.warn('[ForestScene] runId 缺失，强制使用本地掉落兜底');
+      void state.recordKill(enemyConfig.id);
+      this.spawnLocalDropsFromTable(enemyConfig, enemyX, enemyY, depth);
+      return;
+    }
+
+    if (offline) {
+      // 离线分支：保留旧行为（本地经验 + 本地 dropTable）
+      void state.recordKill(enemyConfig.id);
+      this.spawnLocalDropsFromTable(enemyConfig, enemyX, enemyY, depth);
+      return;
+    }
+
+    try {
+      // 在线分支：服务端 ground truth，本地不再 roll dropTable
+      // 先记录 runInventory 快照，便于后面把 newItems 「扔回地上」让玩家拾取
+      const beforeSlots = state.run ? state.run.runInventory.map((s) => s.item) : [];
+      const result = await state.recordKill(enemyConfig.id);
+
+      if (!result || !state.run) return;
+
+      // 如果后端返回了 newItems，把它们从 runInventory 取回来放到地面（保持原有「需要走过去拾取」的体验）
+      if (result.newItems && result.newItems.length > 0) {
+        for (const newItem of result.newItems) {
+          if (!newItem) continue;
+          // 在 runInventory 中找到此 item（GameState.recordKill 已经把它放入），
+          // 把它取出，再 spawn 一个掉落物
+          const idx = state.run.runInventory.findIndex(
+            (s, i) => s.item && !beforeSlots[i] && s.item.id === newItem.id
+          );
+          if (idx >= 0) {
+            state.run.runInventory[idx] = { item: null };
+          }
+          this.spawnDropFromKill(enemyX, enemyY, newItem, enemyConfig, depth);
+        }
+      }
+    } catch (e) {
+      // recordKill 失败不应阻塞游戏，但要给用户兜底奖励
+      console.warn('[ForestScene] recordKill 失败，使用本地 fallback:', e);
+      this.spawnLocalDropsFromTable(enemyConfig, enemyX, enemyY, depth);
+    }
+  }
+
+  /**
+   * 离线/失败兜底：根据本地 dropTable 生成掉落（旧逻辑）
+   */
+  private spawnLocalDropsFromTable(enemyConfig: any, x: number, y: number, depth: number) {
+    const table: { itemId: string; chance: number }[] = enemyConfig?.dropTable ?? [];
     for (const entry of table) {
       if (Math.random() < entry.chance) {
         const itemDef = ItemDataManager.findById(entry.itemId);
         if (itemDef && 'rarity' in itemDef) {
-          this.spawnDrop(enemy.container.x, enemy.container.y, itemDef);
+          this.spawnDrop(x, y, itemDef);
           logItemDrop({
             itemName: itemDef.name,
             itemId: itemDef.id,
@@ -1657,62 +1984,82 @@ export class ForestScene extends Phaser.Scene {
             enemyId: enemyConfig.id,
             isBoss: enemyConfig.isBoss,
             depth,
-            x: Math.round(enemy.container.x),
-            y: Math.round(enemy.container.y),
+            x: Math.round(x),
+            y: Math.round(y),
             dropSource: 'dropTable',
           });
         }
       }
     }
 
-    // 新增独立概率掉落
-    if (Math.random() < 0.10) {
-      this.spawnHpDrop(enemy.container.x, enemy.container.y);
-    }
-    if (Math.random() < 0.10) {
-      this.spawnMpDrop(enemy.container.x, enemy.container.y);
-    }
+    // 离线兜底也保留独立概率掉落
+    if (Math.random() < 0.10) this.spawnHpDrop(x, y);
+    if (Math.random() < 0.10) this.spawnMpDrop(x, y);
     if (Math.random() < 0.10) {
       const pool = ItemDataManager.getItemsByRarity('C');
       if (pool.length > 0) {
         const item = Phaser.Utils.Array.GetRandom(pool);
-        this.spawnDrop(enemy.container.x, enemy.container.y, item);
-        logItemDrop({
-          itemName: item.name,
-          itemId: item.id,
-          itemRarity: item.rarity,
-          enemyName: enemyConfig.name,
-          enemyId: enemyConfig.id,
-          isBoss: enemyConfig.isBoss,
-          depth,
-          x: Math.round(enemy.container.x),
-          y: Math.round(enemy.container.y),
-          dropSource: 'bonusC',
-        });
+        this.spawnDrop(x, y, item);
       }
     }
-    if (Math.random() < 0.05) {
-      const pool = ItemDataManager.getItemsByRarity('B');
-      if (pool.length > 0) {
-        const item = Phaser.Utils.Array.GetRandom(pool);
-        this.spawnDrop(enemy.container.x, enemy.container.y, item);
-        logItemDrop({
-          itemName: item.name,
-          itemId: item.id,
-          itemRarity: item.rarity,
-          enemyName: enemyConfig.name,
-          enemyId: enemyConfig.id,
-          isBoss: enemyConfig.isBoss,
-          depth,
-          x: Math.round(enemy.container.x),
-          y: Math.round(enemy.container.y),
-          dropSource: 'bonusB',
-        });
-      }
-    }
+  }
 
-    enemy.destroy();
-    this.enemies = this.enemies.filter((e) => e !== enemy);
+  /**
+   * 在线分支：从后端权威掉落生成可拾取掉落物。
+   * newItem 形态可能是 Item（含 rarity/slot/stats）或 Consumable（含 type/value）。
+   * 注意：PlayerItem 已经在后端创建并归属当前 run；前端只需做视觉与拾取预测。
+   */
+  private spawnDropFromKill(
+    x: number,
+    y: number,
+    newItem: Item | import('../types').Consumable,
+    enemyConfig: any,
+    depth: number
+  ) {
+    if ('rarity' in newItem) {
+      // 装备掉落
+      this.spawnDrop(x, y, newItem as Item);
+      logItemDrop({
+        itemName: newItem.name,
+        itemId: newItem.id,
+        itemRarity: (newItem as Item).rarity,
+        enemyName: enemyConfig?.name,
+        enemyId: enemyConfig?.id,
+        isBoss: enemyConfig?.isBoss,
+        depth,
+        x: Math.round(x),
+        y: Math.round(y),
+        dropSource: 'serverRoll',
+      });
+    } else {
+      // 消耗品掉落
+      this.spawnConsumableDrop(x, y, newItem as import('../types').Consumable);
+      logItemDrop({
+        itemName: newItem.name,
+        itemId: newItem.id,
+        enemyName: enemyConfig?.name,
+        enemyId: enemyConfig?.id,
+        isBoss: enemyConfig?.isBoss,
+        depth,
+        x: Math.round(x),
+        y: Math.round(y),
+        dropSource: 'serverRoll',
+      });
+    }
+  }
+
+  /**
+   * 把消耗品（药水）以「橙色小瓶」的形式生成在地面上，结构与 spawnDrop 一致：
+   * 走过去后由 updateEnemies 中的拾取检测放进 runInventory。
+   */
+  private spawnConsumableDrop(x: number, y: number, consumable: import('../types').Consumable) {
+    const container = this.add.container(x, y);
+    const box = this.add.rectangle(0, 0, 18, 22, 0x22c55e);
+    const label = this.add.text(0, -16, consumable.name.slice(0, 4), { fontSize: '10px', color: '#ffffff' }).setOrigin(0.5);
+    container.add([box, label]);
+    container.setDepth(y);
+    this.drops.push({ container, item: consumable as unknown as Item });
+    this.physics.world.enable(container);
   }
 
   private spawnDrop(x: number, y: number, item: Item) {
@@ -1770,9 +2117,13 @@ export class ForestScene extends Phaser.Scene {
   }
 
   private updateEnemies(delta: number) {
+    const px = this.player.container.x;
+    const py = this.player.container.y;
     for (const enemy of this.enemies) {
       if (!enemy || enemy.isDead() || !enemy.container?.active) continue;
-      enemy.update(this.player.container.x, this.player.container.y, delta);
+      const dist = Phaser.Math.Distance.Between(px, py, enemy.container.x, enemy.container.y);
+      enemy.container.setVisible(dist <= this.currentVisionRadius);
+      enemy.update(px, py, delta);
     }
 
     // 拾取掉落
@@ -1816,7 +2167,8 @@ export class ForestScene extends Phaser.Scene {
           if (drop.container.active) drop.container.destroy();
           this.drops.splice(i, 1);
         } else if (drop.item && this.runInventory.addItem(drop.item)) {
-          GameState.getInstance().recordItemFound(drop.item.id);
+          const templateId = (drop.item as any).templateId ?? drop.item.id;
+          GameState.getInstance().recordItemFound(templateId);
           const slotIdx = this.runInventory.slots.findIndex((s) => s.item === drop.item);
           logItemPickup({
             itemName: drop.item.name,
@@ -1855,9 +2207,20 @@ export class ForestScene extends Phaser.Scene {
     const state = GameState.getInstance();
     if (state.run) {
       state.run.elapsedTime += delta;
-      state.run.fogValue = Math.min(GAME_CONFIG.maxFog, state.run.elapsedTime * GAME_CONFIG.fogGrowthRate * 0.001);
     }
-    this.fogSystem.update(this.player.container.x, this.player.container.y, this.player.getCurrentVisionRadius(GAME_CONFIG.visionRadius));
+
+    const elapsedSec = (state.run?.elapsedTime ?? 0) / 1000;
+    // 每5秒缩小1%（线性），最大缩小90%
+    const totalShrinkPercent = Math.min(0.9, elapsedSec * 0.002);
+
+    const initialRadius = 640;
+    const minRadius = initialRadius * 0.1; // 10%
+    const currentRadius = initialRadius - (initialRadius - minRadius) * (totalShrinkPercent / 0.9);
+    this.currentVisionRadius = this.player.getCurrentVisionRadius(currentRadius);
+
+    // 迷雾始终完全不透明，第四个参数 opacity 虽然传入但 FogSystem 已忽略
+    this.fogSystem.update(this.player.container.x, this.player.container.y, this.currentVisionRadius, 1);
+    this.currentFogOpacity = 1;
   }
 
   private updateHUD() {
@@ -1881,6 +2244,11 @@ export class ForestScene extends Phaser.Scene {
       this.levelText.setText(`等级: ${state.save.level}`);
 
       if (state.save.level > this.lastLevel) {
+        logLevelUp({
+          oldLevel: this.lastLevel,
+          newLevel: state.save.level,
+          statsAwarded: 5,
+        });
         this.lastLevel = state.save.level;
         this.applyEquipmentStats().catch(() => {});
         this.showFloatingText(this.player.container.x, this.player.container.y - 30, `升级！Lv.${state.save.level}`, 0xfbbf24);
@@ -1916,21 +2284,34 @@ export class ForestScene extends Phaser.Scene {
     }
   }
 
+  private deathHandled = false;
+
   private checkDeath() {
-    if (this.player.isDead()) {
+    if (this.player.isDead() && !this.deathHandled) {
+      this.deathHandled = true;
       const state = GameState.getInstance();
       const run = state.run;
+      const depth = run?.forestDepth ?? 1;
+      const kills = run?.enemiesKilled ?? 0;
+      const elapsedTimeSec = Math.floor((run?.elapsedTime ?? 0) / 1000);
+
       logDeath({
-        depth: run?.forestDepth ?? 1,
-        enemiesKilled: run?.enemiesKilled ?? 0,
-        elapsedTimeSec: Math.floor((run?.elapsedTime ?? 0) / 1000),
+        depth,
+        enemiesKilled: kills,
+        elapsedTimeSec,
         cause: 'enemy_attack',
       });
-      state.dieInRun();
+
+      // fire-and-forget：调后端 reportDeath，但前端不等待结果（避免黑屏）
+      void state.dieInRun().catch(() => {});
+
+      this.damageBar?.destroy();
+      this.damagePanel?.destroy();
+
       this.scene.start('GameOverScene', {
         survived: false,
-        depth: run?.forestDepth ?? 1,
-        kills: run?.enemiesKilled ?? 0,
+        depth,
+        kills,
         items: [],
       });
     }

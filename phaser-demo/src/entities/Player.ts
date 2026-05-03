@@ -3,6 +3,13 @@ import type { ClassType, Skill, Consumable, ActiveConsumableEffect } from '../ty
 import { CLASSES } from '../data/classes';
 import { GAME_CONFIG } from '../config/gameConfig';
 
+/** 后端返回的 buff 效果结构（UseItemResult.buffs 元素） */
+export interface UseItemBuff {
+  type: 'instantHp' | 'instantMp' | 'slowHp' | 'slowMp' | 'vision';
+  value: number;
+  duration?: number;
+}
+
 export class Player {
   container: Phaser.GameObjects.Container;
   body: Phaser.Physics.Arcade.Body;
@@ -321,24 +328,25 @@ export class Player {
     this.mp = Math.min(this.maxMp, this.mp + amount);
   }
 
-  applyConsumableEffect(consumable: Consumable): boolean {
-    switch (consumable.type) {
+  applyConsumableEffect(effect: Consumable | UseItemBuff): boolean {
+    const type = effect.type;
+    switch (type) {
       case 'instantHp': {
         if (this.hp >= this.maxHp) return false;
-        this.heal(consumable.value);
+        this.heal(effect.value);
         return true;
       }
       case 'instantMp': {
         if (this.mp >= this.maxMp) return false;
-        this.restoreMp(consumable.value);
+        this.restoreMp(effect.value);
         return true;
       }
       case 'slowHp': {
         if (this.hp >= this.maxHp) return false;
         this.activeEffects.set('slowHp', {
           type: 'slowHp',
-          value: consumable.value,
-          remainingMs: consumable.duration ?? 10000,
+          value: effect.value,
+          remainingMs: ('duration' in effect ? effect.duration : undefined) ?? 10000,
           tickIntervalMs: 2000,
           lastTickMs: 0,
         });
@@ -348,8 +356,8 @@ export class Player {
         if (this.mp >= this.maxMp) return false;
         this.activeEffects.set('slowMp', {
           type: 'slowMp',
-          value: consumable.value,
-          remainingMs: consumable.duration ?? 10000,
+          value: effect.value,
+          remainingMs: ('duration' in effect ? effect.duration : undefined) ?? 10000,
           tickIntervalMs: 2000,
           lastTickMs: 0,
         });
@@ -358,8 +366,8 @@ export class Player {
       case 'vision': {
         this.activeEffects.set('vision', {
           type: 'vision',
-          value: consumable.value,
-          remainingMs: consumable.duration ?? 15000,
+          value: effect.value,
+          remainingMs: ('duration' in effect ? effect.duration : undefined) ?? 15000,
           tickIntervalMs: 0,
           lastTickMs: 0,
         });

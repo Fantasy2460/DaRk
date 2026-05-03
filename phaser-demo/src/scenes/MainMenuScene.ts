@@ -79,8 +79,32 @@ export class MainMenuScene extends Phaser.Scene {
       .on('pointerout', () => startBtn.setStyle({ backgroundColor: '#1e40af' }))
       .on('pointerdown', () => this.startGame());
 
-    // 底部操作栏：重置存档 + 退出登录
-    this.add.text(cx - 80, 600, '重置存档', {
+    // 底部操作栏：图鉴 + 装备图鉴 + 重置存档 + 退出登录
+    const btnY = 600;
+    const btnGap = 110;
+    const btnStartX = cx - btnGap * 1.5;
+
+    this.add.text(btnStartX, btnY, '怪物图鉴', {
+      fontSize: '14px',
+      color: '#94a3b8',
+    })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true })
+      .on('pointerover', (self: Phaser.GameObjects.Text) => self.setColor('#e2e8f0'))
+      .on('pointerout', (self: Phaser.GameObjects.Text) => self.setColor('#94a3b8'))
+      .on('pointerdown', () => this.scene.start('BestiaryScene'));
+
+    this.add.text(btnStartX + btnGap, btnY, '装备图鉴', {
+      fontSize: '14px',
+      color: '#94a3b8',
+    })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true })
+      .on('pointerover', (self: Phaser.GameObjects.Text) => self.setColor('#e2e8f0'))
+      .on('pointerout', (self: Phaser.GameObjects.Text) => self.setColor('#94a3b8'))
+      .on('pointerdown', () => this.scene.start('EquipmentCodexScene'));
+
+    this.add.text(btnStartX + btnGap * 2, btnY, '重置存档', {
       fontSize: '14px',
       color: '#ef4444',
     })
@@ -91,7 +115,7 @@ export class MainMenuScene extends Phaser.Scene {
         this.scene.restart();
       });
 
-    this.add.text(cx + 80, 600, '退出登录', {
+    this.add.text(btnStartX + btnGap * 3, btnY, '退出登录', {
       fontSize: '14px',
       color: '#94a3b8',
     })

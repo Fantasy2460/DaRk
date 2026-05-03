@@ -10,7 +10,18 @@ import shopRoutes from './routes/shop';
 import itemRoutes from './routes/item';
 import auditRoutes from './routes/audit';
 import transactionRoutes from './routes/transaction';
+import configRoutes from './routes/config';
+import runRoutes from './routes/run';
+import skillRoutes from './routes/skill';
+import enchantRoutes from './routes/enchant';
+import achievementRoutes from './routes/achievement';
+import leaderboardRoutes from './routes/leaderboard';
+import announcementRoutes from './routes/announcement';
+import mailRoutes from './routes/mail';
+import combatRoutes from './routes/combat';
+import antiCheatRoutes from './routes/anticheat';
 import { setupSocketHandlers } from './network/SocketHandlers';
+import { RoomManager } from './network/RoomManager';
 import { prisma } from './config/database';
 
 const app = express();
@@ -60,6 +71,16 @@ app.use('/api/shops', shopRoutes);
 app.use('/api/items', itemRoutes);
 app.use('/api/audit', auditRoutes);
 app.use('/api/transactions', transactionRoutes);
+app.use('/api/config', configRoutes);
+app.use('/api/runs', runRoutes);
+app.use('/api/skills', skillRoutes);
+app.use('/api/enchant', enchantRoutes);
+app.use('/api', achievementRoutes);
+app.use('/api/leaderboards', leaderboardRoutes);
+app.use('/api/announcements', announcementRoutes);
+app.use('/api', mailRoutes);
+app.use('/api/combat', combatRoutes);
+app.use('/api/anticheat', antiCheatRoutes);
 
 // 健康检查
 app.get('/api/health', (_req, res) => {
@@ -67,36 +88,34 @@ app.get('/api/health', (_req, res) => {
 });
 
 // Socket.io 事件
-setupSocketHandlers(io);
+const roomManager = new RoomManager(io);
+setupSocketHandlers(io, roomManager);
 
 async function initSkillTemplates() {
-  const count = await prisma.skillTemplate.count();
-  if (count > 0) return;
-
   const templates = [
-    { id: 'slash', name: '重斩', description: '对前方敌人造成高额物理伤害', classType: 'warrior', type: 'active', requiredLevel: 1, cooldown: 5, mpCost: 10, damage: 30, damagePercent: 200, range: 80, aoe: false, maxLevel: 5 },
-    { id: 'whirlwind', name: '旋风斩', description: '旋转武器对周围所有敌人造成伤害', classType: 'warrior', type: 'active', requiredLevel: 3, cooldown: 8, mpCost: 20, damage: 20, damagePercent: 150, range: 100, aoe: true, maxLevel: 5 },
-    { id: 'fireball', name: '火球术', description: '向目标发射火球，命中后爆炸造成范围伤害', classType: 'mage', type: 'active', requiredLevel: 1, cooldown: 4, mpCost: 15, damage: 25, damagePercent: 180, range: 250, aoe: true, maxLevel: 5 },
-    { id: 'meteor', name: '星落', description: '召唤陨石轰击指定区域，造成巨额范围伤害', classType: 'mage', type: 'active', requiredLevel: 5, cooldown: 12, mpCost: 40, damage: 60, damagePercent: 400, range: 200, aoe: true, maxLevel: 3 },
-    { id: 'manaOverflow', name: '法力流溢', description: '开启后一段时间内攻击附带追踪光球，蓄力速度翻倍', classType: 'mage', type: 'active', requiredLevel: 7, cooldown: 20, mpCost: 30, damage: 15, damagePercent: 100, range: 300, aoe: false, maxLevel: 3 },
-    { id: 'heal', name: '治愈之光', description: '恢复自身及附近队友的生命值', classType: 'sage', type: 'active', requiredLevel: 1, cooldown: 6, mpCost: 12, damage: 0, damagePercent: 0, range: 120, aoe: true, maxLevel: 5 },
-    { id: 'curse', name: '衰弱诅咒', description: '降低敌人的攻击力与防御力', classType: 'sage', type: 'active', requiredLevel: 3, cooldown: 10, mpCost: 18, damage: 10, damagePercent: 80, range: 150, aoe: false, maxLevel: 5 },
+    // 战士
+    { id: 'slash', name: '重斩', description: '对前方敌人造成高额物理伤害', classType: 'warrior', type: 'active', requiredLevel: 1, cooldown: 1200, mpCost: 0, damage: 35, damagePercent: null, range: 60, aoe: false, maxLevel: 5 },
+    { id: 'whirlwind', name: '旋风斩', description: '旋转攻击周围所有敌人', classType: 'warrior', type: 'active', requiredLevel: 3, cooldown: 5000, mpCost: 20, damage: 25, damagePercent: null, range: 80, aoe: true, maxLevel: 5 },
+    // 法师
+    { id: 'fireball', name: '火球术', description: '蓄力发射一枚火球，命中后造成范围爆炸伤害', classType: 'mage', type: 'active', requiredLevel: 1, cooldown: 8000, mpCost: 15, damage: null, damagePercent: 200, range: 200, aoe: true, maxLevel: 5 },
+    { id: 'meteor', name: '星落', description: '蓄力引导陨星降临，对指定区域造成毁灭性打击', classType: 'mage', type: 'active', requiredLevel: 3, cooldown: 10000, mpCost: 40, damage: null, damagePercent: 500, range: 120, aoe: true, maxLevel: 3 },
+    { id: 'manaOverflow', name: '法力流溢', description: '开启后10秒内攻击附带光球，蓄力速度翻倍，技能冷却减半', classType: 'mage', type: 'active', requiredLevel: 5, cooldown: 20000, mpCost: 50, damage: null, damagePercent: null, range: 0, aoe: false, maxLevel: 3 },
+    // 贤者
+    { id: 'heal', name: '治愈之光', description: '恢复自身 40 点生命值', classType: 'sage', type: 'active', requiredLevel: 1, cooldown: 4000, mpCost: 20, damage: 0, damagePercent: null, range: 0, aoe: false, maxLevel: 5 },
+    { id: 'curse', name: '衰弱诅咒', description: '对周围敌人造成伤害并降低其攻击力', classType: 'sage', type: 'active', requiredLevel: 3, cooldown: 8000, mpCost: 30, damage: 15, damagePercent: null, range: 100, aoe: true, maxLevel: 5 },
   ];
 
   for (const t of templates) {
     await prisma.skillTemplate.upsert({
       where: { id: t.id },
       create: t,
-      update: {},
+      update: t,
     });
   }
   console.log(`[初始化] 已插入 ${templates.length} 条技能模板`);
 }
 
 async function initEnemyTemplates() {
-  const count = await prisma.enemyTemplate.count();
-  if (count > 0) return;
-
   const enemies = [
     {
       id: 'goblin', name: '哥布林', hp: 40, attack: 10, defense: 3, speed: 60,
@@ -165,10 +184,10 @@ async function initEnemyTemplates() {
     await prisma.enemyTemplate.upsert({
       where: { id: e.id },
       create: e,
-      update: {},
+      update: e,
     });
   }
-  console.log(`[初始化] 已插入 ${enemies.length} 条怪物模板`);
+  console.log(`[初始化] 已同步 ${enemies.length} 条敌人模板`);
 }
 
 async function initShops() {
